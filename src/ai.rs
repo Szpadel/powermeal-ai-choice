@@ -9,6 +9,7 @@ use async_openai::{
 };
 use chrono::NaiveDate;
 use eyre::Context;
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -17,8 +18,8 @@ use crate::{preferences::Preferences, CalendarDayItems, DishItem};
 #[derive(Debug, Serialize)]
 pub struct SelectDishQuestion {
     pub user_changes: Vec<UserAdjustment>,
+    pub last_days_choices: IndexMap<String, Vec<AiMenuDietOption>>,
     pub dish_items: Vec<AiDishItem>,
-    pub last_days_choices: HashMap<String, Vec<AiMenuDietOption>>,
     pub menu_date: NaiveDate,
 }
 
@@ -54,12 +55,13 @@ pub struct AiMenuDietOption {
 pub struct ResponseItem {
     pub dish_id: String,
     pub reason: String,
+    pub analysis: HashMap<String, String>,
 }
 
 pub async fn select_dish(
     date: NaiveDate,
     dish_items: &Vec<DishItem>,
-    last_days_choices: &HashMap<String, CalendarDayItems>,
+    last_days_choices: &IndexMap<String, CalendarDayItems>,
 ) -> eyre::Result<AiResponse> {
     let client = Client::new();
 
@@ -76,10 +78,19 @@ pub async fn select_dish(
         let dish_item_schema = json!({
             "type": "object",
             "properties": {
-                "reason": { "type": "string", "description": "Why this dish is selected" },
+                "analysis": {
+                    "type": "object",
+                    "description": "Analyze available options and argue how good it is for the user",
+                    "properties": dish_item.options().iter().map(|dish| (dish.dish.id.clone(), json!({
+                        "type": "string",
+                    }))).collect::<serde_json::Map<_,_>>(),
+                    "required": dish_item.options().iter().map(|dish| dish.dish.id.clone()).collect::<Vec<String>>(),
+                    "additionalProperties": false
+                },
+                "reason": { "type": "string", "description": "Justification why this meal should fit user preferences" },
                 "dish_id": { "type": "string", "enum": dish_item.options().iter().map(|dish| dish.dish.id.clone()).collect::<Vec<String>>() },
             },
-            "required": ["reason", "dish_id"],
+            "required": ["analysis", "reason", "dish_id"],
             "additionalProperties": false
         });
         properties.insert(dish_item_id, dish_item_schema);
@@ -122,7 +133,7 @@ pub async fn select_dish(
         .temperature(0.0)
         .messages([
             ChatCompletionRequestSystemMessage::from(
-                "You are personal meal assistant. You have to select meals for the user. Try to figure out what the user wants to eat from the menu. Justify why user should prefer one meal over another."
+                "You are personal meal assistant. You have to select meals for the user. Figure out what the user wants to eat from the menu. Use historic data to figure out user preferences. Try not to pick the same meal as the user had in the last days.",
             )
             .into(),
             ChatCompletionRequestUserMessage::from(serde_json::to_string(&SelectDishQuestion{
@@ -139,8 +150,7 @@ pub async fn select_dish(
                 user_changes: Preferences::get_preferences(),
                 last_days_choices: last_days_choices.iter().map(|(day, menu)| {
                     (day.clone(), menu.diet_elements.members.iter().map(|dish_item| {
-                        let options = dish_item.options();
-                        let dish = options.iter().find(|option| option.is_default).expect("one must dish must be selected");
+                        let dish = dish_item.get_selected_option().expect("No selected option");
                         AiMenuDietOption {
                             name: dish.name.clone(),
                             ingredients: dish.ingredients.clone(),

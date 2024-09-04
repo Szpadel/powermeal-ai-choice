@@ -9,9 +9,9 @@ use ai::{AiResponse, UserAdjustment};
 use chrono::{DateTime, Days, Local, NaiveDate, TimeZone};
 use dialoguer::{theme::ColorfulTheme, Input, Select};
 use eyre::{Context, ContextCompat, OptionExt};
+use indexmap::IndexMap;
 use preferences::Preferences;
 use std::{
-    collections::HashMap,
     io::{self, Write},
     time::Duration,
 };
@@ -63,6 +63,7 @@ async fn main() -> eyre::Result<()> {
     let days = days_available_to_select(&token, &diets).await?;
 
     if days.is_empty() {
+        clear_status();
         println!("No days available to select menu");
         return Ok(());
     }
@@ -125,7 +126,7 @@ async fn select_dishes_for_day(
     clear_status();
     println!("{}, {}", date.format("%Y-%m-%d"), date.format("%A"));
     println!("{}", calendar_day_items.debug_options());
-    let last_days_choices = fetch_historical_orders(token, diets, 7).await?;
+    let last_days_choices = fetch_historical_orders(token, diets, &date, 7).await?;
     status("Ai is thinking...");
     let result = ai::select_dish(
         date.date_naive(),
@@ -172,7 +173,7 @@ async fn confirm_preferences_save(new_preferences: Vec<UserAdjustment>) -> eyre:
     println!("New preferences:");
     for pref in &new_preferences {
         println!(
-            "  {}\n  -> {}{}",
+            "  \x1b[31m{}\x1b[0m -> \x1b[32m{}\x1b[0m{}",
             pref.from,
             pref.to,
             pref.reason
@@ -204,13 +205,7 @@ async fn confirm_menu_change(
         let dish_item = calendar_day_items
             .get_dish_item(&item.dish_item)
             .ok_or_eyre("dish item not found")?;
-        let current_name = dish_item
-            .options
-            .iter()
-            .find(|x| x.is_default)
-            .unwrap()
-            .name
-            .clone();
+        let current_name = dish_item.get_selected_option().unwrap().name.clone();
         let new_name = calendar_day_items
             .get_dish(&item.dish_item, &item.dish)
             .map(|dish| dish.name.clone())
@@ -218,8 +213,11 @@ async fn confirm_menu_change(
                 tracing::warn!("Dish not found: {}", item.dish);
                 "Unknown dish".to_string()
             });
-        println!("{}:", dish_item.meal_type.name);
-        println!("  {} -> {}", current_name, new_name);
+        println!("\x1b[1m{}\x1b[0m", dish_item.meal_type.name);
+        println!(
+            "  \x1b[31m{}\x1b[0m -> \x1b[32m{}\x1b[0m",
+            current_name, new_name
+        );
     }
     if dialoguer::Confirm::new()
         .with_prompt("Save menu changes?")
@@ -236,11 +234,12 @@ async fn confirm_menu_change(
 async fn fetch_historical_orders(
     token: &str,
     diets: &DietsList,
+    date: &DateTime<Local>,
     days: i64,
-) -> eyre::Result<HashMap<String, CalendarDayItems>> {
-    let mut last_days_choices = HashMap::new();
-    for day in 1..=days {
-        let date = chrono::Local::now()
+) -> eyre::Result<IndexMap<String, CalendarDayItems>> {
+    let mut last_days_choices = IndexMap::new();
+    for day in (1..=days).rev() {
+        let date = date
             .checked_sub_signed(chrono::Duration::days(day))
             .unwrap();
         status(&format!(
@@ -250,7 +249,14 @@ async fn fetch_historical_orders(
         ));
         if let Some(diet) = diets.diet_for_date(&date) {
             let calendar_day_items = get_diet(&date, diet.id, token).await?;
-            last_days_choices.insert(format!("{day} days ago"), calendar_day_items);
+            last_days_choices.insert(
+                if day == 1 {
+                    "yesterday".to_string()
+                } else {
+                    format!("{day} days ago")
+                },
+                calendar_day_items,
+            );
         } else {
             clear_status();
             println!("No diet active for {}", date.format("%Y-%m-%d"));
@@ -275,6 +281,21 @@ async fn select_dishes(
             .position(|x| x.dish.id == ai.dish_id)
             .unwrap();
 
+        for (dish_id, analysis) in ai.analysis.iter() {
+            print_with_delay(
+                &format!(
+                    " 𝔞𝔦 \x1b[1m{}\x1b[0m {}",
+                    dish_item
+                        .get_dish(dish_id)
+                        .map(|d| d.name.as_str())
+                        .unwrap_or("unknown"),
+                    analysis
+                ),
+                1,
+            )
+            .await;
+        }
+        println!();
         print_with_delay(&format!(" 𝔞𝔦 {}", ai.reason), 1).await;
         let selection = Select::with_theme(&ColorfulTheme::default())
             .with_prompt(dish_item.meal_type.name.to_string())
@@ -305,10 +326,15 @@ async fn select_dishes(
             });
         }
 
+        let selected_option_id = dish_item
+            .get_selected_option()
+            .map(|x| x.dish.id.clone())
+            .unwrap_or_default();
+
         let current = dish_item
             .options()
             .iter()
-            .position(|x| x.is_default)
+            .position(|x| x.dish.id == selected_option_id)
             .unwrap();
         if selection != current {
             menu_changes.items.push(ChangeMenuItem {

@@ -39,6 +39,8 @@ pub struct DishItem {
     pub options: Vec<MenuDietOption>,
     #[serde(rename = "mealType")]
     pub meal_type: MealType,
+    #[serde(rename = "dishSize")]
+    pub dish_size: DishSize,
 }
 
 impl DishItem {
@@ -48,6 +50,20 @@ impl DishItem {
             .filter(|option| option.enabled)
             .collect()
     }
+
+    pub fn get_dish(&self, dish_id: &str) -> Option<&MenuDietOption> {
+        self.options.iter().find(|option| option.dish.id == dish_id)
+    }
+
+    pub fn get_selected_option(&self) -> Option<&MenuDietOption> {
+        let id = &self.dish_size.dish.id;
+        self.options.iter().find(|option| &option.dish.id == id)
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DishSize {
+    pub dish: Dish,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -60,8 +76,6 @@ pub struct MenuDietOption {
     pub name: String,
     pub ingredients: Vec<String>,
     pub enabled: bool,
-    #[serde(rename = "isDefault")]
-    pub is_default: bool,
     pub dish: Dish,
 }
 
@@ -83,13 +97,14 @@ impl CalendarDayItems {
         let mut summary = String::new();
         for dish in &self.diet_elements.members {
             summary.push_str(&format!("{}\n", dish.meal_type.name));
+            let selected_option_id = dish.get_selected_option().map(|o| o.dish.id.clone()).unwrap_or_default();
             for option in &dish.options {
                 if !option.enabled {
                     continue;
                 }
                 summary.push_str(&format!(
                     "  [{}] {}\n",
-                    if option.is_default { "*" } else { " " },
+                    if option.dish.id == selected_option_id { "*" } else { " " },
                     option.name,
                 ));
                 // summary.push_str(&format!("        {}\n", option.ingredients.join(", ")));
