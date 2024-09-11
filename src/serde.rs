@@ -67,7 +67,7 @@ pub struct DishIngredients {
     pub members: Vec<DishSizeIngredients>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DishSizeIngredients {
     #[serde(rename = "dishSizeId")]
     pub dish_size_id: i64,

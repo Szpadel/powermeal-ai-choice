@@ -12,11 +12,16 @@ use eyre::{Context, ContextCompat, OptionExt};
 use indexmap::IndexMap;
 use preferences::Preferences;
 use std::{
+    collections::HashMap,
     io::{self, Write},
+    sync::{LazyLock, Mutex},
     time::Duration,
 };
 use tokio::time::sleep;
 use tracing_subscriber::{layer::SubscriberExt, prelude::*, util::SubscriberInitExt};
+
+static INGREDIENTS_CACHE: LazyLock<Mutex<HashMap<i64, DishSizeIngredients>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn status(txt: &str) {
     clear_status();
@@ -124,14 +129,30 @@ async fn get_diet_with_ingredients(
     for dish_item in &mut calendar_day_items.diet_elements.members {
         for option in &mut dish_item.options {
             if option.ingredients.is_none() {
-                status(&format!(
-                    "Fetching ingredients for {}",
-                    option.name.as_str()
-                ));
-                let ingredients = fetch_ingredients(token, option.dish_size_id)
-                    .await
-                    .wrap_err("while fetching ingredients")?;
-                option.ingredients = Some(ingredients);
+                // Try to get ingredients from cache first
+                {
+                    let ingredients_cache = INGREDIENTS_CACHE.lock().unwrap();
+
+                    option.ingredients = ingredients_cache
+                        .get(&option.dish_size_id).cloned();
+                }
+
+                // still nothing, fetch from api
+                if option.ingredients.is_none() {
+                    status(&format!(
+                        "Fetching ingredients for {}",
+                        option.name.as_str()
+                    ));
+                    let ingredients = fetch_ingredients(token, option.dish_size_id)
+                        .await
+                        .wrap_err("while fetching ingredients")?;
+                    // cache ingredients
+                    {
+                        let mut ingredients_cache = INGREDIENTS_CACHE.lock().unwrap();
+                        ingredients_cache.insert(option.dish_size_id, ingredients.clone());
+                    }
+                    option.ingredients = Some(ingredients);
+                }
             }
         }
     }
