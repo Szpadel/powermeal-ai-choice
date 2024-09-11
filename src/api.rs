@@ -1,4 +1,4 @@
-use crate::{Calendar, CalendarDayItems, ChangeMenuRequest, DietsList, RefreshTokenResponse};
+use crate::{Calendar, CalendarDayItems, ChangeMenuRequest, DietsList, DishIngredients, DishSizeIngredients, RefreshTokenResponse};
 use chrono::{DateTime, Local, NaiveDate};
 use eyre::{Context, Ok};
 
@@ -100,4 +100,32 @@ pub async fn change_menu(
         .await
         .wrap_err("in menu change http request")?;
     Ok(())
+}
+
+pub async fn fetch_ingredients(
+    token: &str,
+    dish_size_id: i64,
+) -> eyre::Result<DishSizeIngredients> {
+    let url = format!(
+        "https://api.powermeal.pl/v2/frontend/ingredients_by_dish_sizes/list?dishSizeIds[]={dish_size_id}",
+    );
+    let response = reqwest::Client::new()
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Origin", "https://panel.powermeal.pl")
+        .header("Accept", "application/json, text/plain, */*")
+        .send()
+        .await
+        .wrap_err("in ingredients http request")?;
+    let data = response.text().await.wrap_err("while reading response")?;
+    let ingredients: DishIngredients = serde_json::from_str(&data)
+        .wrap_err_with(|| format!("while parsing ingredients\nJson: {data:?}",))?;
+
+    if ingredients.members.len() != 1 {
+        eyre::bail!(
+            "Expected one dish size ingredients, got {}",
+            ingredients.members.len()
+        );
+    }
+    Ok(ingredients.members.into_iter().next().unwrap())
 }

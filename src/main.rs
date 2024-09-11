@@ -115,6 +115,29 @@ async fn days_available_to_select(
     Ok(days)
 }
 
+async fn get_diet_with_ingredients(
+    date: &DateTime<Local>,
+    diet_id: i64,
+    token: &str,
+) -> eyre::Result<CalendarDayItems> {
+    let mut calendar_day_items = get_diet(date, diet_id, token).await?;
+    for dish_item in &mut calendar_day_items.diet_elements.members {
+        for option in &mut dish_item.options {
+            if option.ingredients.is_none() {
+                status(&format!(
+                    "Fetching ingredients for {}",
+                    option.name.as_str()
+                ));
+                let ingredients = fetch_ingredients(token, option.dish_size_id)
+                    .await
+                    .wrap_err("while fetching ingredients")?;
+                option.ingredients = Some(ingredients);
+            }
+        }
+    }
+    Ok(calendar_day_items)
+}
+
 async fn select_dishes_for_day(
     token: &str,
     date: DateTime<Local>,
@@ -122,7 +145,7 @@ async fn select_dishes_for_day(
 ) -> eyre::Result<()> {
     status("Fetching menu...");
     let diet_id = diets.diet_for_date(&date).wrap_err("no diet for date")?.id;
-    let calendar_day_items = get_diet(&date, diet_id, token).await?;
+    let calendar_day_items = get_diet_with_ingredients(&date, diet_id, token).await?;
     clear_status();
     println!("{}, {}", date.format("%Y-%m-%d"), date.format("%A"));
     println!("{}", calendar_day_items.debug_options());
@@ -248,7 +271,7 @@ async fn fetch_historical_orders(
             day
         ));
         if let Some(diet) = diets.diet_for_date(&date) {
-            let calendar_day_items = get_diet(&date, diet.id, token).await?;
+            let calendar_day_items = get_diet_with_ingredients(&date, diet.id, token).await?;
             last_days_choices.insert(
                 if day == 1 {
                     "yesterday".to_string()
@@ -360,7 +383,7 @@ async fn _dish_stats() -> eyre::Result<()> {
             .checked_sub_signed(chrono::Duration::days(i))
             .unwrap();
         let diet_id = diets.diet_for_date(&date).wrap_err("no diet for date")?.id;
-        let calendar_day_items = get_diet(&date, diet_id, &token).await?;
+        let calendar_day_items = get_diet_with_ingredients(&date, diet_id, &token).await?;
 
         // Count dishes
         for dish in calendar_day_items

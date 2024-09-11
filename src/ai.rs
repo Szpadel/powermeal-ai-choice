@@ -143,7 +143,7 @@ pub async fn select_dish(
                     meal_type: dish_item.meal_type.name.clone(),
                     options: dish_item.options().iter().map(|dish| AiMenuDietOption {
                         name: dish.name.clone(),
-                        ingredients: dish.ingredients.clone(),
+                        ingredients: dish.ingredients.as_ref().map(|i| i.ingredients.clone()).unwrap_or_default(),
                         id: dish.dish.id.clone(),
                     }).collect(),
                 }).collect(),
@@ -153,7 +153,7 @@ pub async fn select_dish(
                         let dish = dish_item.get_selected_option().expect("No selected option");
                         AiMenuDietOption {
                             name: dish.name.clone(),
-                            ingredients: dish.ingredients.clone(),
+                            ingredients: dish.ingredients.as_ref().map(|i| i.ingredients.clone()).unwrap_or_default(),
                             id: dish.dish.id.clone(),
                         }
                     }).collect())

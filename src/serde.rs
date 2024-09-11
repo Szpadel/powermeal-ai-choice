@@ -62,6 +62,19 @@ impl DishItem {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct DishIngredients {
+    #[serde(rename = "hydra:member")]
+    pub members: Vec<DishSizeIngredients>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DishSizeIngredients {
+    #[serde(rename = "dishSizeId")]
+    pub dish_size_id: i64,
+    pub ingredients: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DishSize {
     pub dish: Dish,
 }
@@ -74,9 +87,12 @@ pub struct MealType {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MenuDietOption {
     pub name: String,
-    pub ingredients: Vec<String>,
     pub enabled: bool,
     pub dish: Dish,
+    #[serde(rename = "dishSizeId")]
+    pub dish_size_id: i64,
+    #[serde(skip)]
+    pub ingredients: Option<DishSizeIngredients>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
