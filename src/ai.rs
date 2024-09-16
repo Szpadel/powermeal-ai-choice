@@ -129,7 +129,7 @@ pub async fn select_dish(
 
     let request = CreateChatCompletionRequestArgs::default()
         .max_tokens(2048u32)
-        .model("gpt-4o-mini")
+        .model("gpt-4o-2024-08-06")
         .temperature(0.0)
         .messages([
             ChatCompletionRequestSystemMessage::from(
