@@ -112,6 +112,9 @@ async fn days_available_to_select(
         for (date, status) in calendar.days {
             if status.state == DietDayState::AvailableToSelect {
                 days.push(Local.from_local_datetime(&date.into()).unwrap());
+            }else if status.state == DietDayState::NotBoughtDiet {
+                clear_status();
+                println!("{}: Diet not bought", date);
             }
         }
     }

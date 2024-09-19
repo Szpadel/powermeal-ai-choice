@@ -176,6 +176,8 @@ pub struct DietCalendarDay {
 pub enum DietDayState {
     #[serde(rename = "NOT_DIET_CANT_PLACE_ORDER")]
     NoDiet,
+    #[serde(rename = "NOT_DIET_CAN_PLACE_ORDER")]
+    NotBoughtDiet,
     #[serde(rename = "DELIVERED_NOT_RATED_CAN_RATE")]
     Delivered,
     #[serde(rename = "NOT_DELIVERED_BLOCKED")]
