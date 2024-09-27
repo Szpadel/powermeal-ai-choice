@@ -25,7 +25,7 @@ async fn send_request(
         };
 
         let response = request_builder.send().await.wrap_err("in http request")?;
-        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS || response.status().is_server_error() {
             let retry_after = response
                 .headers()
                 .get("Retry-After")
@@ -33,7 +33,7 @@ async fn send_request(
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(10);
             tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
-            tracing::warn!("Rate limited, retrying");
+            tracing::warn!("Got {}, retrying", response.status());
             continue;
         }
         let data = response.text().await.wrap_err("while reading response")?;

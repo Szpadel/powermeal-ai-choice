@@ -23,6 +23,8 @@ use tracing_subscriber::{layer::SubscriberExt, prelude::*, util::SubscriberInitE
 static INGREDIENTS_CACHE: LazyLock<Mutex<HashMap<i64, DishSizeIngredients>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+const FETCH_HISTORY_DAYS: i64 = 14;
+
 fn status(txt: &str) {
     clear_status();
     print!("{}\r", txt);
@@ -64,7 +66,7 @@ async fn main() -> eyre::Result<()> {
             }
         };
 
-    let diets = fetch_diets(&token).await?;
+    let diets = fetch_diets(&token).await.wrap_err("fetch diets")?;
     let days = days_available_to_select(&token, &diets).await?;
 
     if days.is_empty() {
@@ -80,6 +82,48 @@ async fn main() -> eyre::Result<()> {
     Ok(())
 }
 
+async fn diet_for_date<'a>(
+    token: &str,
+    diet_list: &'a DietsList,
+    date: &DateTime<Local>,
+) -> eyre::Result<Option<&'a Diet>> {
+    if let Some(diet) = diet_list.diet_for_date(date) {
+        return Ok(Some(diet));
+    }
+
+    // In case we reschedule some days in the diet, we might get some days that are outside set delivery dates
+    for diet in diet_list.members.iter() {
+        status(&format!(
+            "Searching for diet: Fetching calendar for diet #{}",
+            diet.id
+        ));
+        let calendar = fetch_calendar(
+            token,
+            diet.id,
+            // Extend the range to fetch the calendar
+            if date < &diet.first_delivery_date {
+                date.date_naive()
+            } else {
+                diet.first_delivery_date.date_naive()
+            },
+            if date > &diet.last_delivery_date {
+                date.date_naive()
+            } else {
+                diet.last_delivery_date.date_naive()
+            },
+        )
+        .await
+        .wrap_err("fetch calendar")?;
+        if let Some(diet_day) = calendar.days.get(&date.date_naive()) {
+            if diet_day.state == DietDayState::AvailableToSelect {
+                return Ok(Some(diet));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 async fn update_token() -> eyre::Result<RefreshTokenResponse> {
     loop {
         let token = dialoguer::Input::<String>::new()
@@ -91,6 +135,7 @@ async fn update_token() -> eyre::Result<RefreshTokenResponse> {
                 return Ok(resp);
             }
             Err(e) => {
+                clear_status();
                 eprintln!("Error: {}", e);
             }
         }
@@ -105,17 +150,40 @@ async fn days_available_to_select(
     let next_day = preferences::Preferences::next_day_to_check().unwrap_or_else(chrono::Local::now);
     let end_day = next_day + chrono::Duration::days(14);
 
+    #[derive(Debug, PartialEq)]
+    enum DietDayStatus {
+        AvailableToSelect,
+        NotBoughtDiet,
+        Other,
+    }
+    let mut diet_day_status: HashMap<NaiveDate, DietDayStatus> = HashMap::new();
+
     for diet in diets.diets_in_time_range(&next_day, &end_day) {
         status(&format!("Fetching calendar for diet #{}", diet.id));
-        let calendar =
-            fetch_calendar(token, diet.id, next_day.date_naive(), end_day.date_naive()).await?;
+        let calendar = fetch_calendar(token, diet.id, next_day.date_naive(), end_day.date_naive())
+            .await
+            .wrap_err("fetching calendar")?;
         for (date, status) in calendar.days {
             if status.state == DietDayState::AvailableToSelect {
+                diet_day_status.insert(date, DietDayStatus::AvailableToSelect);
                 days.push(Local.from_local_datetime(&date.into()).unwrap());
-            }else if status.state == DietDayState::NotBoughtDiet {
-                clear_status();
-                println!("{}: Diet not bought", date);
+            } else if status.state == DietDayState::NotBoughtDiet {
+                diet_day_status
+                    .entry(date)
+                    .or_insert(DietDayStatus::NotBoughtDiet);
+            } else if matches!(
+                diet_day_status.get(&date),
+                None | Some(DietDayStatus::NotBoughtDiet)
+            ) {
+                diet_day_status.insert(date, DietDayStatus::Other);
             }
+        }
+    }
+
+    for (date, status) in diet_day_status {
+        if let DietDayStatus::NotBoughtDiet = status {
+            clear_status();
+            println!("{}: No diet bought", date);
         }
     }
 
@@ -136,8 +204,7 @@ async fn get_diet_with_ingredients(
                 {
                     let ingredients_cache = INGREDIENTS_CACHE.lock().unwrap();
 
-                    option.ingredients = ingredients_cache
-                        .get(&option.dish_size_id).cloned();
+                    option.ingredients = ingredients_cache.get(&option.dish_size_id).cloned();
                 }
 
                 // still nothing, fetch from api
@@ -148,7 +215,7 @@ async fn get_diet_with_ingredients(
                     ));
                     let ingredients = fetch_ingredients(token, option.dish_size_id)
                         .await
-                        .wrap_err("while fetching ingredients")?;
+                        .wrap_err("fetching ingredients")?;
                     // cache ingredients
                     {
                         let mut ingredients_cache = INGREDIENTS_CACHE.lock().unwrap();
@@ -168,19 +235,28 @@ async fn select_dishes_for_day(
     diets: &DietsList,
 ) -> eyre::Result<()> {
     status("Fetching menu...");
-    let diet_id = diets.diet_for_date(&date).wrap_err("no diet for date")?.id;
-    let calendar_day_items = get_diet_with_ingredients(&date, diet_id, token).await?;
+    let diet_id = diet_for_date(token, diets, &date)
+        .await
+        .wrap_err_with(|| format!("find diet day for {date}"))?
+        .ok_or_else(|| eyre::eyre!("no diet for date {date}"))?
+        .id;
+    let calendar_day_items = get_diet_with_ingredients(&date, diet_id, token)
+        .await
+        .wrap_err("getting diet with ingredients")?;
     clear_status();
     println!("{}, {}", date.format("%Y-%m-%d"), date.format("%A"));
     println!("{}", calendar_day_items.debug_options());
-    let last_days_choices = fetch_historical_orders(token, diets, &date, 7).await?;
+    let last_days_choices = fetch_historical_orders(token, diets, &date, FETCH_HISTORY_DAYS)
+        .await
+        .wrap_err("fetching historical orders")?;
     status("Ai is thinking...");
     let result = ai::select_dish(
         date.date_naive(),
         &calendar_day_items.diet_elements.members,
         &last_days_choices,
     )
-    .await?;
+    .await
+    .wrap_err("selecting dish with ai")?;
     clear_status();
     println!();
 
@@ -210,7 +286,8 @@ async fn select_dishes_for_day(
             &menu_changes,
             &calendar_day_items,
         )
-        .await?;
+        .await
+        .wrap_err("confirm menu change")?;
     }
     Preferences::set_next_day_to_check(date.date_naive().checked_add_days(Days::new(1)).unwrap());
     Ok(())
@@ -294,7 +371,10 @@ async fn fetch_historical_orders(
             date.format("%Y-%m-%d"),
             day
         ));
-        if let Some(diet) = diets.diet_for_date(&date) {
+        if let Some(diet) = diet_for_date(token, diets, &date)
+            .await
+            .wrap_err_with(|| format!("find diet day for {date}"))?
+        {
             let calendar_day_items = get_diet_with_ingredients(&date, diet.id, token).await?;
             last_days_choices.insert(
                 if day == 1 {
