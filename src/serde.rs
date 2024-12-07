@@ -186,6 +186,10 @@ pub enum DietDayState {
     AvailableToSelect,
     #[serde(rename = "NOT_DELIVERED_WITH_CONFIGURABLE_WITHOUT_MENU")]
     WithoutMenu,
+    #[serde(rename = "DELIVERED_NOT_RATED_BLOCKED")]
+    CannotRate,
+    #[serde(rename = "DISABLED")]
+    Disabled,
 }
 
 #[derive(Debug, Serialize, Default)]
