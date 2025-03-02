@@ -12,6 +12,14 @@ pub struct Preferences {
     adjustments: Vec<UserAdjustment>,
     last_day_selected: Option<NaiveDate>,
     token: Option<String>,
+    ai_config: Option<AiConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AiConfig {
+    pub api_base: String,
+    pub api_key: String,
+    pub model: String,
 }
 
 impl Preferences {
@@ -32,9 +40,17 @@ impl Preferences {
     }
 
     pub fn next_day_to_check() -> Option<DateTime<Local>> {
+        let now = Local::now();
         Self::load_preferences()
             .last_day_selected
-            .map(|d| Local.from_local_datetime(&d.into()).unwrap())
+            .map(|d| {
+                let date = Local.from_local_datetime(&d.into()).unwrap();
+                if date < now {
+                    now
+                } else {
+                    date
+                }
+            })
     }
 
     pub fn set_next_day_to_check(date: NaiveDate) {
@@ -55,8 +71,19 @@ impl Preferences {
                 adjustments: Vec::new(),
                 last_day_selected: None,
                 token: None,
+                ai_config: None,
             }
         }
+    }
+
+    pub fn save_ai_config(config: AiConfig) {
+        let mut preferences = Self::load_preferences();
+        preferences.ai_config = Some(config);
+        preferences.save_preferences();
+    }
+
+    pub fn ai_config() -> Option<AiConfig> {
+        Self::load_preferences().ai_config
     }
 
     pub fn save_token(token: &str) {

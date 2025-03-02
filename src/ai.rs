@@ -1,19 +1,21 @@
 use std::collections::HashMap;
 
 use async_openai::{
+    config::OpenAIConfig,
     types::{
-        ChatCompletionRequestSystemMessage, ChatCompletionRequestUserMessage,
+        ChatCompletionRequestSystemMessage, ChatCompletionRequestUserMessage, 
         CreateChatCompletionRequestArgs, ResponseFormat, ResponseFormatJsonSchema,
     },
     Client,
 };
 use chrono::NaiveDate;
-use eyre::Context;
+use dialoguer::{theme::ColorfulTheme, FuzzySelect, Input};
+use eyre::{Context, Report, Result};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{preferences::Preferences, CalendarDayItems, DishItem};
+use crate::{preferences::{AiConfig, Preferences}, CalendarDayItems, DishItem};
 
 #[derive(Debug, Serialize)]
 pub struct SelectDishQuestion {
@@ -58,12 +60,103 @@ pub struct ResponseItem {
     pub analysis: HashMap<String, String>,
 }
 
+async fn fetch_models(client: &Client<OpenAIConfig>) -> Result<Vec<String>> {
+    match client.models().list().await {
+        Ok(models) => {
+            let model_names: Vec<String> = models.data
+                .into_iter()
+                .map(|model| model.id)
+                .collect();
+            Ok(model_names)
+        },
+        Err(err) => {
+            eprintln!("Failed to fetch models: {}", err);
+            Err(Report::new(err))
+        }
+    }
+}
+
+// Helper function to prompt user for model selection or input
+fn get_model_input(models: Vec<String>) -> Result<String> {
+    if models.is_empty() {
+        Input::<String>::new()
+            .with_prompt("Enter model name")
+            .default("gpt-4o-2024-08-06".to_string())
+            .interact()
+            .map_err(Into::into)
+    } else {
+        let filtered_items = FuzzySelect::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select a model (type to filter)")
+            .default(0)
+            .items(&models)
+            .interact()?;
+        Ok(models[filtered_items].clone())
+    }
+}
+
+// Main configuration function now async
+pub async fn configure_ai() -> Result<AiConfig> {
+    println!("AI Configuration Setup");
+    
+    let api_base = Input::<String>::new()
+        .with_prompt("Enter API base URL (e.g., https://api.openai.com/v1 or your LiteLLM server URL)")
+        .default("https://api.openai.com/v1".to_string())
+        .interact()?;
+    
+    let api_key = Input::<String>::new()
+        .with_prompt("Enter API key")
+        .interact()?;
+    
+    // Create a temporary client to fetch models
+    let temp_config = OpenAIConfig::new()
+        .with_api_base(&api_base)
+        .with_api_key(&api_key);
+    let client = Client::with_config(temp_config);
+    
+    // Try to fetch models
+    let models = match fetch_models(&client).await {
+        Ok(models) => models,
+        Err(_) => {
+            println!("Could not fetch models list, please enter model name manually.");
+            Vec::new() // Empty vec will trigger manual input
+        }
+    };
+    
+    // Now get user input for model selection or manual entry
+    let model = get_model_input(models)?;
+    
+    let config = AiConfig {
+        api_base,
+        api_key,
+        model,
+    };
+    
+    Preferences::save_ai_config(config.clone());
+    println!("AI configuration saved");
+    
+    Ok(config)
+}
+
+fn get_openai_client(config: &AiConfig) -> Client<OpenAIConfig> {
+    let openai_config = OpenAIConfig::new()
+        .with_api_base(&config.api_base)
+        .with_api_key(&config.api_key);
+    
+    Client::with_config(openai_config)
+}
+
 pub async fn select_dish(
     date: NaiveDate,
     dish_items: &Vec<DishItem>,
     last_days_choices: &IndexMap<String, CalendarDayItems>,
 ) -> eyre::Result<AiResponse> {
-    let client = Client::new();
+    // Get or configure AI settings
+    let ai_config = match Preferences::ai_config() {
+        Some(config) => config,
+        None => configure_ai().await?,
+    };
+    
+    let client = get_openai_client(&ai_config);
 
     let mut dish_item_name = HashMap::new();
     let mut dish_name = HashMap::new();
@@ -129,7 +222,7 @@ pub async fn select_dish(
 
     let request = CreateChatCompletionRequestArgs::default()
         .max_tokens(2048u32)
-        .model("gpt-4o-2024-08-06")
+        .model(&ai_config.model)
         .temperature(0.0)
         .messages([
             ChatCompletionRequestSystemMessage::from(

@@ -1,12 +1,15 @@
 pub mod ai;
 mod api;
+mod cache;
 mod preferences;
 pub mod serde;
 
 use crate::api::*;
+use crate::cache::IngredientsCache;
 use crate::serde::*;
 use ai::{AiResponse, UserAdjustment};
 use chrono::{DateTime, Days, Local, NaiveDate, TimeZone};
+use clap::{Parser, Subcommand};
 use dialoguer::{theme::ColorfulTheme, Input, Select};
 use eyre::{Context, ContextCompat, OptionExt};
 use indexmap::IndexMap;
@@ -14,14 +17,24 @@ use preferences::Preferences;
 use std::{
     collections::HashMap,
     io::{self, Write},
-    sync::{LazyLock, Mutex},
     time::Duration,
 };
 use tokio::time::sleep;
 use tracing_subscriber::{layer::SubscriberExt, prelude::*, util::SubscriberInitExt};
 
-static INGREDIENTS_CACHE: LazyLock<Mutex<HashMap<i64, DishSizeIngredients>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Configure AI settings (API URL, key, model)
+    ConfigureAi,
+}
+
 
 const FETCH_HISTORY_DAYS: i64 = 14;
 
@@ -50,9 +63,27 @@ async fn main() -> eyre::Result<()> {
     init_tracing();
     // dish_stats().await?;
 
+    // Reference cache to initialize it
+    let _cache = IngredientsCache::get_instance();
+
+    let cli = Cli::parse();
+
+    match cli.command {
+        Some(Commands::ConfigureAi) => {
+            ai::configure_ai().await?;
+            return Ok(());
+        }
+        None => {}
+    }
+
     if Preferences::token().is_none() {
         print!("Session refresh token is not set.");
         update_token().await?;
+    }
+    
+    if Preferences::ai_config().is_none() {
+        print!("AI configuration is not set.");
+        ai::configure_ai().await?;
     }
 
     status("Authenticating...");
@@ -197,15 +228,13 @@ async fn get_diet_with_ingredients(
     token: &str,
 ) -> eyre::Result<CalendarDayItems> {
     let mut calendar_day_items = get_diet(date, diet_id, token).await?;
+    let ingredients_cache = IngredientsCache::get_instance();
+    
     for dish_item in &mut calendar_day_items.diet_elements.members {
         for option in &mut dish_item.options {
             if option.ingredients.is_none() {
                 // Try to get ingredients from cache first
-                {
-                    let ingredients_cache = INGREDIENTS_CACHE.lock().unwrap();
-
-                    option.ingredients = ingredients_cache.get(&option.dish_size_id).cloned();
-                }
+                option.ingredients = ingredients_cache.get(&option.dish_size_id);
 
                 // still nothing, fetch from api
                 if option.ingredients.is_none() {
@@ -216,11 +245,9 @@ async fn get_diet_with_ingredients(
                     let ingredients = fetch_ingredients(token, option.dish_size_id)
                         .await
                         .wrap_err("fetching ingredients")?;
+                    
                     // cache ingredients
-                    {
-                        let mut ingredients_cache = INGREDIENTS_CACHE.lock().unwrap();
-                        ingredients_cache.insert(option.dish_size_id, ingredients.clone());
-                    }
+                    ingredients_cache.put(option.dish_size_id, ingredients.clone());
                     option.ingredients = Some(ingredients);
                 }
             }
