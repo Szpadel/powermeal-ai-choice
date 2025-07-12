@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use async_openai::{
     config::OpenAIConfig,
     types::{
-        ChatCompletionRequestSystemMessage, ChatCompletionRequestUserMessage, 
-        CreateChatCompletionRequestArgs, ResponseFormat, ResponseFormatJsonSchema,
+        ChatCompletionRequestSystemMessage, ChatCompletionRequestUserMessage,
+        CreateChatCompletionRequestArgs, ReasoningEffort, ResponseFormat, ResponseFormatJsonSchema,
     },
     Client,
 };
@@ -97,22 +97,22 @@ fn get_model_input(models: Vec<String>) -> Result<String> {
 // Main configuration function now async
 pub async fn configure_ai() -> Result<AiConfig> {
     println!("AI Configuration Setup");
-    
+
     let api_base = Input::<String>::new()
         .with_prompt("Enter API base URL (e.g., https://api.openai.com/v1 or your LiteLLM server URL)")
         .default("https://api.openai.com/v1".to_string())
         .interact()?;
-    
+
     let api_key = Input::<String>::new()
         .with_prompt("Enter API key")
         .interact()?;
-    
+
     // Create a temporary client to fetch models
     let temp_config = OpenAIConfig::new()
         .with_api_base(&api_base)
         .with_api_key(&api_key);
     let client = Client::with_config(temp_config);
-    
+
     // Try to fetch models
     let models = match fetch_models(&client).await {
         Ok(models) => models,
@@ -121,19 +121,19 @@ pub async fn configure_ai() -> Result<AiConfig> {
             Vec::new() // Empty vec will trigger manual input
         }
     };
-    
+
     // Now get user input for model selection or manual entry
     let model = get_model_input(models)?;
-    
+
     let config = AiConfig {
         api_base,
         api_key,
         model,
     };
-    
+
     Preferences::save_ai_config(config.clone());
     println!("AI configuration saved");
-    
+
     Ok(config)
 }
 
@@ -141,7 +141,7 @@ fn get_openai_client(config: &AiConfig) -> Client<OpenAIConfig> {
     let openai_config = OpenAIConfig::new()
         .with_api_base(&config.api_base)
         .with_api_key(&config.api_key);
-    
+
     Client::with_config(openai_config)
 }
 
@@ -155,7 +155,7 @@ pub async fn select_dish(
         Some(config) => config,
         None => configure_ai().await?,
     };
-    
+
     let client = get_openai_client(&ai_config);
 
     let mut dish_item_name = HashMap::new();
@@ -221,9 +221,10 @@ pub async fn select_dish(
     };
 
     let request = CreateChatCompletionRequestArgs::default()
-        .max_tokens(2048u32)
+        .max_tokens(1024u32 * 40)
         .model(&ai_config.model)
-        .temperature(0.0)
+        .reasoning_effort(ReasoningEffort::High)
+        // .temperature(0.0)
         .messages([
             ChatCompletionRequestSystemMessage::from(
                 "You are personal meal assistant. You have to select meals for the user. Figure out what the user wants to eat from the menu. Use historic data to figure out user preferences. Try not to pick the same meal as the user had in the last days.",
@@ -256,33 +257,31 @@ pub async fn select_dish(
         .response_format(response_format)
         .build()?;
 
-    let response = client.chat().create(request).await?;
+    // Retry logic for handling empty responses
+    let mut retries = 0;
+    const MAX_RETRIES: u32 = 5;
 
-    if let Some(choice) = response.choices.first() {
-        if let Some(content) = &choice.message.content {
-            // println!("{}\n\n\n\n", content);
-            let response: AiResponse = serde_json::from_str(content).wrap_err("in ai response")?;
-            Ok(response)
-            // for reason in &response.reasoning {
-            //     println!("Ai: {}", reason);
-            // }
-            // println!("\n");
-            // for (dish_item_id, dish) in response.selections {
-            //     println!(
-            //         "{}: {}\n   reason: {}",
-            //         dish_item_name
-            //             .get(&dish_item_id)
-            //             .unwrap_or(&"invalid".to_string()),
-            //         dish_name
-            //             .get(&dish.dish_id)
-            //             .unwrap_or(&"invalid".to_string()),
-            //         dish.reason,
-            //     );
-            // }
-        } else {
+    loop {
+        let response = client.chat().create(request.clone()).await?;
+
+        // println!("Response: {:#?}", response);
+        if let Some(choice) = response.choices.first() {
+            if let Some(content) = &choice.message.content {
+                if content.trim().is_empty() {
+                    retries += 1;
+                    if retries <= MAX_RETRIES {
+                        tracing::warn!("Received empty response from AI, retrying... ({}/{})", retries, MAX_RETRIES);
+                        continue;
+                    }
+                    eyre::bail!("Received empty response from AI after {} retries", MAX_RETRIES);
+                }
+
+                // println!("{}\n\n\n\n", content);
+                let response: AiResponse = serde_json::from_str(content).wrap_err(format!("in ai response: {content}"))?;
+                return Ok(response);
+            }
             eyre::bail!("No content in response from AI");
         }
-    } else {
         eyre::bail!("No response from AI");
     }
 }
