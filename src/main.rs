@@ -27,6 +27,9 @@ use tracing_subscriber::{layer::SubscriberExt, prelude::*, util::SubscriberInitE
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+    /// Auto accept AI selections without user confirmation
+    #[arg(long)]
+    yolo: bool,
 }
 
 #[derive(Subcommand)]
@@ -80,7 +83,7 @@ async fn main() -> eyre::Result<()> {
         print!("Session refresh token is not set.");
         update_token().await?;
     }
-    
+
     if Preferences::ai_config().is_none() {
         print!("AI configuration is not set.");
         ai::configure_ai().await?;
@@ -107,7 +110,7 @@ async fn main() -> eyre::Result<()> {
     }
 
     for next_day in days {
-        select_dishes_for_day(&token, next_day, &diets).await?;
+        select_dishes_for_day(&token, next_day, &diets, cli.yolo).await?;
     }
 
     Ok(())
@@ -195,7 +198,7 @@ async fn days_available_to_select(
             .await
             .wrap_err("fetching calendar")?;
         for (date, status) in calendar.days {
-            if status.state == DietDayState::AvailableToSelect {
+            if matches!(status.state, DietDayState::AvailableToSelect | DietDayState::NotDeliveredCanSelectMenu) {
                 diet_day_status.insert(date, DietDayStatus::AvailableToSelect);
                 days.push(Local.from_local_datetime(&date.into()).unwrap());
             } else if status.state == DietDayState::NotBoughtDiet {
@@ -229,7 +232,7 @@ async fn get_diet_with_ingredients(
 ) -> eyre::Result<CalendarDayItems> {
     let mut calendar_day_items = get_diet(date, diet_id, token).await?;
     let ingredients_cache = IngredientsCache::get_instance();
-    
+
     for dish_item in &mut calendar_day_items.diet_elements.members {
         for option in &mut dish_item.options {
             if option.ingredients.is_none() {
@@ -245,7 +248,7 @@ async fn get_diet_with_ingredients(
                     let ingredients = fetch_ingredients(token, option.dish_size_id)
                         .await
                         .wrap_err("fetching ingredients")?;
-                    
+
                     // cache ingredients
                     ingredients_cache.put(option.dish_size_id, ingredients.clone());
                     option.ingredients = Some(ingredients);
@@ -260,6 +263,7 @@ async fn select_dishes_for_day(
     token: &str,
     date: DateTime<Local>,
     diets: &DietsList,
+    yolo: bool,
 ) -> eyre::Result<()> {
     status("Fetching menu...");
     let diet_id = diet_for_date(token, diets, &date)
@@ -276,6 +280,9 @@ async fn select_dishes_for_day(
     let last_days_choices = fetch_historical_orders(token, diets, &date, FETCH_HISTORY_DAYS)
         .await
         .wrap_err("fetching historical orders")?;
+    cache::IngredientsCache::get_instance()
+        .save()
+        .wrap_err("saving ingredients cache")?;
     status("Ai is thinking...");
     let result = ai::select_dish(
         date.date_naive(),
@@ -297,6 +304,7 @@ async fn select_dishes_for_day(
         &date.date_naive(),
         result,
         &mut menu_changes,
+        yolo,
     )
     .await
     .wrap_err("while asking user")?;
@@ -424,6 +432,7 @@ async fn select_dishes(
     date: &NaiveDate,
     ai_result: AiResponse,
     menu_changes: &mut ChangeMenuRequest,
+    yolo: bool,
 ) -> eyre::Result<Vec<UserAdjustment>> {
     let mut new_preferences = Vec::new();
     println!();
@@ -451,17 +460,23 @@ async fn select_dishes(
         }
         println!();
         print_with_delay(&format!(" 𝔞𝔦 {}", ai.reason), 1).await;
-        let selection = Select::with_theme(&ColorfulTheme::default())
-            .with_prompt(dish_item.meal_type.name.to_string())
-            .items(
-                &dish_item
-                    .options()
-                    .iter()
-                    .map(|x| x.name.as_str())
-                    .collect::<Vec<_>>(),
-            )
-            .default(ai_selected)
-            .interact()?;
+
+        let selection = if yolo {
+            println!(" [auto-selected by AI]");
+            ai_selected
+        } else {
+            Select::with_theme(&ColorfulTheme::default())
+                .with_prompt(dish_item.meal_type.name.to_string())
+                .items(
+                    &dish_item
+                        .options()
+                        .iter()
+                        .map(|x| x.name.as_str())
+                        .collect::<Vec<_>>(),
+                )
+                .default(ai_selected)
+                .interact()?
+        };
 
         if selection != ai_selected {
             let explaination: String = Input::new()
