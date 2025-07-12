@@ -190,6 +190,8 @@ pub enum DietDayState {
     CannotRate,
     #[serde(rename = "DISABLED")]
     Disabled,
+    #[serde(rename = "NOT_DELIVERED_CAN_SELECT_MENU")]
+    NotDeliveredCanSelectMenu,
 }
 
 #[derive(Debug, Serialize, Default)]
