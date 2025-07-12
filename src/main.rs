@@ -320,6 +320,7 @@ async fn select_dishes_for_day(
             diet_id,
             &menu_changes,
             &calendar_day_items,
+            yolo,
         )
         .await
         .wrap_err("confirm menu change")?;
@@ -358,6 +359,7 @@ async fn confirm_menu_change(
     diet_id: i64,
     menu_changes: &ChangeMenuRequest,
     calendar_day_items: &CalendarDayItems,
+    yolo: bool,
 ) -> eyre::Result<()> {
     println!("Menu changes:");
     for item in &menu_changes.items {
@@ -378,10 +380,11 @@ async fn confirm_menu_change(
             current_name, new_name
         );
     }
-    if dialoguer::Confirm::new()
+    let should_save = yolo || dialoguer::Confirm::new()
         .with_prompt("Save menu changes?")
-        .interact()?
-    {
+        .interact()?;
+
+    if should_save {
         status("Saving menu changes...");
         change_menu(token, date, diet_id, menu_changes).await?;
         clear_status();
