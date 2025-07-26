@@ -19,7 +19,7 @@ use crate::{preferences::{AiConfig, Preferences}, CalendarDayItems, DishItem};
 
 #[derive(Debug, Serialize)]
 pub struct SelectDishQuestion {
-    pub user_changes: Vec<UserAdjustment>,
+    pub user_preferences: String,
     pub last_days_choices: IndexMap<String, Vec<AiMenuDietOption>>,
     pub dish_items: Vec<AiDishItem>,
     pub menu_date: NaiveDate,
@@ -70,7 +70,7 @@ async fn fetch_models(client: &Client<OpenAIConfig>) -> Result<Vec<String>> {
             Ok(model_names)
         },
         Err(err) => {
-            eprintln!("Failed to fetch models: {}", err);
+            eprintln!("Failed to fetch models: {err}");
             Err(Report::new(err))
         }
     }
@@ -149,6 +149,7 @@ pub async fn select_dish(
     date: NaiveDate,
     dish_items: &Vec<DishItem>,
     last_days_choices: &IndexMap<String, CalendarDayItems>,
+    user_preferences: &str,
 ) -> eyre::Result<AiResponse> {
     // Get or configure AI settings
     let ai_config = match Preferences::ai_config() {
@@ -220,39 +221,40 @@ pub async fn select_dish(
         },
     };
 
+    let question = SelectDishQuestion {
+        user_preferences: user_preferences.to_string(),
+        last_days_choices: last_days_choices.iter().map(|(day, menu)| {
+            (day.clone(), menu.diet_elements.members.iter().map(|dish_item| {
+                let dish = dish_item.get_selected_option().expect("No selected option");
+                AiMenuDietOption {
+                    name: dish.name.clone(),
+                    ingredients: dish.ingredients.as_ref().map(|i| i.ingredients.clone()).unwrap_or_default(),
+                    id: dish.dish.id.clone(),
+                }
+            }).collect())
+        }).collect(),
+        dish_items: dish_items.iter().map(|dish_item| AiDishItem {
+            id: dish_item.id.clone(),
+            meal_type: dish_item.meal_type.name.clone(),
+            options: dish_item.options().iter().map(|dish| AiMenuDietOption {
+                name: dish.name.clone(),
+                ingredients: dish.ingredients.as_ref().map(|i| i.ingredients.clone()).unwrap_or_default(),
+                id: dish.dish.id.clone(),
+            }).collect(),
+        }).collect(),
+        menu_date: date,
+    };
+
     let request = CreateChatCompletionRequestArgs::default()
         .max_tokens(1024u32 * 40)
         .model(&ai_config.model)
         .reasoning_effort(ReasoningEffort::High)
-        // .temperature(0.0)
         .messages([
             ChatCompletionRequestSystemMessage::from(
                 "You are personal meal assistant. You have to select meals for the user. Figure out what the user wants to eat from the menu. Use historic data to figure out user preferences. Try not to pick the same meal as the user had in the last days.",
             )
             .into(),
-            ChatCompletionRequestUserMessage::from(serde_json::to_string(&SelectDishQuestion{
-                menu_date: date,
-                dish_items: dish_items.iter().map(|dish_item| AiDishItem {
-                    id: dish_item.id.clone(),
-                    meal_type: dish_item.meal_type.name.clone(),
-                    options: dish_item.options().iter().map(|dish| AiMenuDietOption {
-                        name: dish.name.clone(),
-                        ingredients: dish.ingredients.as_ref().map(|i| i.ingredients.clone()).unwrap_or_default(),
-                        id: dish.dish.id.clone(),
-                    }).collect(),
-                }).collect(),
-                user_changes: Preferences::get_preferences(),
-                last_days_choices: last_days_choices.iter().map(|(day, menu)| {
-                    (day.clone(), menu.diet_elements.members.iter().map(|dish_item| {
-                        let dish = dish_item.get_selected_option().expect("No selected option");
-                        AiMenuDietOption {
-                            name: dish.name.clone(),
-                            ingredients: dish.ingredients.as_ref().map(|i| i.ingredients.clone()).unwrap_or_default(),
-                            id: dish.dish.id.clone(),
-                        }
-                    }).collect())
-                }).collect(),
-            }).unwrap()).into(),
+            ChatCompletionRequestUserMessage::from(serde_json::to_string(&question).unwrap()).into(),
         ])
         .response_format(response_format)
         .build()?;
@@ -264,7 +266,6 @@ pub async fn select_dish(
     loop {
         let response = client.chat().create(request.clone()).await?;
 
-        // println!("Response: {:#?}", response);
         if let Some(choice) = response.choices.first() {
             if let Some(content) = &choice.message.content {
                 if content.trim().is_empty() {
@@ -276,7 +277,6 @@ pub async fn select_dish(
                     eyre::bail!("Received empty response from AI after {} retries", MAX_RETRIES);
                 }
 
-                // println!("{}\n\n\n\n", content);
                 let response: AiResponse = serde_json::from_str(content).wrap_err(format!("in ai response: {content}"))?;
                 return Ok(response);
             }
@@ -284,4 +284,64 @@ pub async fn select_dish(
         }
         eyre::bail!("No response from AI");
     }
+}
+pub async fn ai_generate_preferences(
+    adjustments: &[UserAdjustment],
+    cfg: &AiConfig,
+) -> eyre::Result<String> {
+    use async_openai::types::*;
+    let client = get_openai_client(cfg);
+
+    let system_prompt = r#"
+You are a dietary preference analyzer. Synthesize the provided list of user adjustments into a
+coherent, natural language description of dietary preferences. Guidelines:
+
+- Write in first-person perspective ("I prefer...", "I avoid...")
+- Group similar preferences together (allergies, preferences, restrictions)
+- Infer dietary patterns from recurring adjustments
+- Keep it concise (4-8 bullet points or short paragraphs)
+- Include specific foods to avoid or prefer
+- Mention reasoning when explicitly provided
+- Format naturally without technical formatting (JSON, markdown, etc.)
+
+Output ONLY the preference description without additional commentary."#;
+
+    let user = format!(
+        "Convert these historical meal adjustments into user-friendly dietary preferences:\n\n{}",
+        serde_json::to_string_pretty(adjustments)?
+    );
+
+    let mut attempts = 0;
+    const MAX_ATTEMPTS: u8 = 3;
+
+    while attempts < MAX_ATTEMPTS {
+        let req = CreateChatCompletionRequestArgs::default()
+            .model(&cfg.model)
+            .messages([
+                ChatCompletionRequestSystemMessage::from(system_prompt).into(),
+                ChatCompletionRequestUserMessage::from(user.as_str()).into(),
+            ])
+            .max_tokens(1024u32 * 40)
+            .reasoning_effort(ReasoningEffort::High)
+            .build()?;
+
+        match client.chat().create(req).await {
+            Ok(resp) => {
+                return resp.choices
+                    .first()
+                    .and_then(|c| c.message.content.clone())
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| eyre::eyre!("Empty AI response"));
+            }
+            Err(e) => {
+                attempts += 1;
+                if attempts < MAX_ATTEMPTS {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                return Err(e).wrap_err("AI service failed after retries");
+            }
+        }
+    }
+    unreachable!()
 }

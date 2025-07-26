@@ -7,10 +7,10 @@ pub mod serde;
 use crate::api::*;
 use crate::cache::IngredientsCache;
 use crate::serde::*;
-use ai::{AiResponse, UserAdjustment};
+use ai::AiResponse;
 use chrono::{DateTime, Days, Local, NaiveDate, TimeZone};
 use clap::{Parser, Subcommand};
-use dialoguer::{theme::ColorfulTheme, Input, Select};
+use dialoguer::{theme::ColorfulTheme, Select};
 use eyre::{Context, ContextCompat, OptionExt};
 use indexmap::IndexMap;
 use preferences::Preferences;
@@ -36,6 +36,8 @@ struct Cli {
 enum Commands {
     /// Configure AI settings (API URL, key, model)
     ConfigureAi,
+    /// Edit your free-text meal preferences
+    EditPreferences,
 }
 
 
@@ -43,7 +45,7 @@ const FETCH_HISTORY_DAYS: i64 = 14;
 
 fn status(txt: &str) {
     clear_status();
-    print!("{}\r", txt);
+    print!("{txt}\r");
     io::stdout().flush().unwrap();
 }
 
@@ -54,7 +56,7 @@ fn clear_status() {
 
 async fn print_with_delay(message: &str, delay_ms: u64) {
     for c in message.chars() {
-        print!("{}", c);
+        print!("{c}");
         io::stdout().flush().unwrap();
         sleep(Duration::from_millis(delay_ms)).await;
     }
@@ -64,16 +66,25 @@ async fn print_with_delay(message: &str, delay_ms: u64) {
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     init_tracing();
-    // dish_stats().await?;
-
-    // Reference cache to initialize it
     let _cache = IngredientsCache::get_instance();
+
+    let mut preferences = Preferences::load_preferences();
+
+    // Migration check
+    if preferences.needs_migration() {
+        migrate_preferences(&mut preferences).await?;
+    }
 
     let cli = Cli::parse();
 
     match cli.command {
         Some(Commands::ConfigureAi) => {
-            ai::configure_ai().await?;
+            preferences.ai_config = Some(ai::configure_ai().await?);
+            preferences.save_preferences();
+            return Ok(());
+        }
+        Some(Commands::EditPreferences) => {
+            edit_preferences_cli(&preferences)?;
             return Ok(());
         }
         None => {}
@@ -95,7 +106,7 @@ async fn main() -> eyre::Result<()> {
             Ok(token) => token.token,
             Err(e) => {
                 clear_status();
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
                 update_token().await?.token
             }
         };
@@ -110,7 +121,7 @@ async fn main() -> eyre::Result<()> {
     }
 
     for next_day in days {
-        select_dishes_for_day(&token, next_day, &diets, cli.yolo).await?;
+        select_dishes_for_day(&token, next_day, &diets, cli.yolo, &preferences).await?;
     }
 
     Ok(())
@@ -170,7 +181,7 @@ async fn update_token() -> eyre::Result<RefreshTokenResponse> {
             }
             Err(e) => {
                 clear_status();
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
             }
         }
     }
@@ -217,7 +228,7 @@ async fn days_available_to_select(
     for (date, status) in diet_day_status {
         if let DietDayStatus::NotBoughtDiet = status {
             clear_status();
-            println!("{}: No diet bought", date);
+            println!("{date}: No diet bought");
         }
     }
 
@@ -264,6 +275,7 @@ async fn select_dishes_for_day(
     date: DateTime<Local>,
     diets: &DietsList,
     yolo: bool,
+    preferences: &Preferences,
 ) -> eyre::Result<()> {
     status("Fetching menu...");
     let diet_id = diet_for_date(token, diets, &date)
@@ -288,6 +300,7 @@ async fn select_dishes_for_day(
         date.date_naive(),
         &calendar_day_items.diet_elements.members,
         &last_days_choices,
+        &preferences.user_preferences,
     )
     .await
     .wrap_err("selecting dish with ai")?;
@@ -295,11 +308,11 @@ async fn select_dishes_for_day(
     println!();
 
     for reason in &result.reasoning {
-        print_with_delay(&format!(" 𝔞𝔦 {}", reason), 1).await;
+        print_with_delay(&format!(" 𝔞𝔦 {reason}"), 1).await;
     }
 
     let mut menu_changes = ChangeMenuRequest::default();
-    let new_preferences = select_dishes(
+    select_dishes(
         &calendar_day_items,
         &date.date_naive(),
         result,
@@ -308,10 +321,6 @@ async fn select_dishes_for_day(
     )
     .await
     .wrap_err("while asking user")?;
-
-    if !new_preferences.is_empty() {
-        confirm_preferences_save(new_preferences).await?;
-    }
 
     if !menu_changes.items.is_empty() {
         confirm_menu_change(
@@ -329,29 +338,6 @@ async fn select_dishes_for_day(
     Ok(())
 }
 
-async fn confirm_preferences_save(new_preferences: Vec<UserAdjustment>) -> eyre::Result<()> {
-    println!("New preferences:");
-    for pref in &new_preferences {
-        println!(
-            "  \x1b[31m{}\x1b[0m -> \x1b[32m{}\x1b[0m{}",
-            pref.from,
-            pref.to,
-            pref.reason
-                .as_ref()
-                .map(|x| format!("\n  because: {}", x))
-                .unwrap_or_default()
-        );
-    }
-    if dialoguer::Confirm::new()
-        .with_prompt("Add new preferences?")
-        .interact()?
-    {
-        preferences::Preferences::add_new_preferences(new_preferences);
-        println!("Preferences saved");
-    }
-    println!();
-    Ok(())
-}
 
 async fn confirm_menu_change(
     token: &str,
@@ -376,8 +362,7 @@ async fn confirm_menu_change(
             });
         println!("\x1b[1m{}\x1b[0m", dish_item.meal_type.name);
         println!(
-            "  \x1b[31m{}\x1b[0m -> \x1b[32m{}\x1b[0m",
-            current_name, new_name
+            "  \x1b[31m{current_name}\x1b[0m -> \x1b[32m{new_name}\x1b[0m"
         );
     }
     let should_save = yolo || dialoguer::Confirm::new()
@@ -432,12 +417,11 @@ async fn fetch_historical_orders(
 
 async fn select_dishes(
     calendar_day_items: &CalendarDayItems,
-    date: &NaiveDate,
+    _date: &NaiveDate,
     ai_result: AiResponse,
     menu_changes: &mut ChangeMenuRequest,
     yolo: bool,
-) -> eyre::Result<Vec<UserAdjustment>> {
-    let mut new_preferences = Vec::new();
+) -> eyre::Result<()> {
     println!();
     for dish_item in &calendar_day_items.diet_elements.members {
         let ai = ai_result.selections.get(&dish_item.id).unwrap();
@@ -482,20 +466,8 @@ async fn select_dishes(
         };
 
         if selection != ai_selected {
-            let explaination: String = Input::new()
-                .with_prompt("Why?")
-                .allow_empty(true)
-                .interact_text()?;
-            new_preferences.push(UserAdjustment {
-                from: dish_item.options()[ai_selected].name.clone(),
-                to: dish_item.options()[selection].name.clone(),
-                reason: if explaination.is_empty() {
-                    None
-                } else {
-                    Some(explaination)
-                },
-                date: *date,
-            });
+            println!("\nYour choice differs from the AI's suggestion.");
+            println!("To make this change permanent for future selections, run: powermeal edit-preferences");
         }
 
         let selected_option_id = dish_item
@@ -516,7 +488,7 @@ async fn select_dishes(
         }
         println!();
     }
-    Ok(new_preferences)
+    Ok(())
 }
 
 async fn _dish_stats() -> eyre::Result<()> {
@@ -551,7 +523,7 @@ async fn _dish_stats() -> eyre::Result<()> {
     // Print dish counts
     for (dish, count) in dish_counts {
         let name = dish_names.get(&dish).unwrap();
-        println!("{} [id={}] : {}", name, dish, count);
+        println!("{name} [id={dish}] : {count}");
     }
 
     Ok(())
@@ -566,4 +538,108 @@ fn init_tracing() {
             ),
         )
         .init();
+}
+async fn migrate_preferences(preferences: &mut Preferences) -> eyre::Result<()> {
+    println!("\nDetected legacy structured preferences. Migrating to free-text format...");
+
+    // Only configure AI if needed for migration
+    if preferences.ai_config.is_none() {
+        println!("AI configuration needed for migration. Setting up...");
+        preferences.ai_config = Some(ai::configure_ai().await?);
+        preferences.save_preferences();
+    }
+
+    println!("Analyzing your previous choices to create preference description...");
+    let ai_cfg = preferences.ai_config.as_ref().unwrap();
+    let draft = ai::ai_generate_preferences(&preferences.adjustments, ai_cfg).await?;
+
+    println!("Opening your editor so you can review and customize the preferences...");
+    let header = "# AI-Generated Preference Draft\n\
+                 # Please review, edit, and save:\n\
+                 # - Add any preferences not captured by the AI\n\
+                 # - Remove anything inaccurate\n\
+                 # - Save the file to complete migration\n\n";
+
+    let edited = edit_in_editor(&format!("{header}{draft}"))?;
+
+    if edited.trim().is_empty() {
+        eyre::bail!("Migration cancelled - file saved empty. Your legacy preferences remain intact.");
+    }
+
+    preferences.complete_migration(edited);
+    println!("Preferences migrated successfully!");
+    println!("You can review or modify them at any time with: powermeal edit-preferences");
+    Ok(())
+}
+
+fn edit_in_editor(initial: &str) -> eyre::Result<String> {
+    let tmp = tempfile::NamedTempFile::new()?;
+    std::fs::write(tmp.path(), initial)?;
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".into());
+    println!("Launching editor: {editor} (set EDITOR environment variable to change)");
+
+    let status = std::process::Command::new(&editor)
+        .arg(tmp.path())
+        .status()
+        .wrap_err_with(|| format!("Failed to launch editor: {editor}"))?;
+
+    if !status.success() {
+        return Err(eyre::eyre!("Editor exited with error status"));
+    }
+
+    Ok(std::fs::read_to_string(tmp.path())?)
+}
+
+fn edit_preferences_cli(preferences: &Preferences) -> eyre::Result<()> {
+    let existing = preferences.user_preferences.clone();
+    let is_new = existing.trim().is_empty();
+
+    if is_new {
+        println!("You don't have any saved preferences yet.");
+        println!("Describe your dietary requirements, portion preferences, allergens, and dietary goals.");
+        println!("Example: 'I'm vegetarian, avoid dairy, love spicy food, need ~2000 kcal/day'");
+
+        if !dialoguer::Confirm::new()
+            .with_prompt("Open editor to create preferences?")
+            .interact()?
+        {
+            return Ok(());
+        }
+    }
+
+    let content = if is_new {
+        "# Your Meal Preferences\n\
+         # Describe your dietary requirements below. The AI will use this to select meals.\n\
+         # Examples:\n\
+         #   → I avoid pork for religious reasons\n\
+         #   → Need high-protein breakfasts\n\
+         #   → Allergic to shellfish\n\n"
+    } else {
+        &existing
+    };
+
+    let edited = edit_in_editor(content)?;
+    let trimmed = edited.trim().to_string();
+
+    if trimmed.is_empty() {
+        println!("Editor saved empty content. No changes made.");
+        return Ok(());
+    }
+
+    if trimmed != existing {
+        if dialoguer::Confirm::new()
+            .with_prompt("Save the changes to your preferences?")
+            .interact()?
+        {
+            let mut prefs = Preferences::load_preferences();
+            prefs.user_preferences = trimmed;
+            prefs.save_preferences();
+            println!("Preferences updated successfully.");
+        }
+    } else {
+        println!("No changes detected in the edited preferences.");
+    }
+
+    Ok(())
 }

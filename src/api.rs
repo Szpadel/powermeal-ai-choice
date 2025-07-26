@@ -12,7 +12,7 @@ async fn send_request(
         let client = reqwest::Client::new();
         let request_builder = client
             .request(method.clone(), url)
-            .header("Authorization", format!("Bearer {}", token))
+            .header("Authorization", format!("Bearer {token}"))
             .header("Origin", "https://panel.powermeal.pl")
             .header("Accept", "application/json, text/plain, */*");
 

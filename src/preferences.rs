@@ -7,12 +7,17 @@ use crate::ai::UserAdjustment;
 
 const PREFERENCES_FILE: &str = ".config/powermeal-ai/preferences.json";
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Preferences {
-    adjustments: Vec<UserAdjustment>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub user_preferences: String,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub adjustments: Vec<UserAdjustment>,
+
     last_day_selected: Option<NaiveDate>,
     token: Option<String>,
-    ai_config: Option<AiConfig>,
+    pub ai_config: Option<AiConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -23,20 +28,18 @@ pub struct AiConfig {
 }
 
 impl Preferences {
-    pub fn add_new_preferences(adjustment: Vec<UserAdjustment>) {
-        let mut preferences = Self::load_preferences();
-        preferences.adjustments.extend(adjustment);
-        // limit to last 100 adjustments
-        if preferences.adjustments.len() > 100 {
-            preferences
-                .adjustments
-                .drain(..preferences.adjustments.len() - 100);
-        }
-        preferences.save_preferences();
+    /// Checks if legacy data needs migration to the new format
+    pub fn needs_migration(&self) -> bool {
+        !self.adjustments.is_empty() && self.user_preferences.trim().is_empty()
     }
 
-    pub fn get_preferences() -> Vec<UserAdjustment> {
-        Self::load_preferences().adjustments
+    /// Completes the migration by saving edited text and clearing legacy data
+    pub fn complete_migration(&mut self, edited_text: String) {
+        if !edited_text.trim().is_empty() {
+            self.user_preferences = edited_text.trim().to_string();
+            self.adjustments.clear();
+            self.save_preferences();
+        }
     }
 
     pub fn next_day_to_check() -> Option<DateTime<Local>> {
@@ -59,21 +62,27 @@ impl Preferences {
         preferences.save_preferences();
     }
 
-    fn load_preferences() -> Self {
+    /// Loads preferences from disk
+    pub fn load_preferences() -> Self {
         let path = Self::config_path();
         if path.exists() {
-            let file = std::fs::File::open(path).unwrap();
+            let file = std::fs::File::open(&path).expect("Failed to open config file");
             let reader = std::io::BufReader::new(file);
-            let preferences: Preferences = serde_json::from_reader(reader).unwrap();
-            preferences
+            serde_json::from_reader(reader).unwrap_or_default()
         } else {
-            Preferences {
-                adjustments: Vec::new(),
-                last_day_selected: None,
-                token: None,
-                ai_config: None,
-            }
+            Self::default()
         }
+    }
+
+    /// Saves preferences to disk
+    pub fn save_preferences(&self) {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("Failed to create config directory");
+        }
+        let file = std::fs::File::create(&path).expect("Failed to create config file");
+        let writer = std::io::BufWriter::new(file);
+        serde_json::to_writer(writer, self).expect("Failed to serialize preferences");
     }
 
     pub fn save_ai_config(config: AiConfig) {
@@ -94,16 +103,6 @@ impl Preferences {
 
     pub fn token() -> Option<String> {
         Self::load_preferences().token
-    }
-
-    fn save_preferences(self) {
-        let path = Self::config_path();
-        if !path.exists() {
-            std::fs::create_dir_all(path.parent().unwrap()).expect("Failed to create directory");
-        }
-        let file = std::fs::File::create(path).unwrap();
-        let writer = std::io::BufWriter::new(file);
-        serde_json::to_writer(writer, &self).unwrap();
     }
 
     fn config_path() -> PathBuf {
