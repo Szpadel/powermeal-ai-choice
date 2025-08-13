@@ -2,6 +2,7 @@ pub mod ai;
 mod api;
 mod cache;
 mod preferences;
+pub mod prompts;
 pub mod serde;
 
 use crate::api::*;
@@ -236,6 +237,31 @@ async fn days_available_to_select(
     Ok(days)
 }
 
+async fn get_diet_with_ingredients_with_fallback_search(
+    date: &DateTime<Local>,
+    primary_diet_id: i64,
+    all_diets: &DietsList,
+    token: &str
+) -> eyre::Result<CalendarDayItems> {
+    let primary_diet = get_diet_with_ingredients(date, primary_diet_id, token).await?;
+    if ! primary_diet.diet_elements.members.is_empty() {
+        return Ok(primary_diet);
+    }
+
+    for diet_id in all_diets.members.iter().map(|d| d.id) {
+        if diet_id == primary_diet_id {
+            continue;
+        }
+
+        let alternative_diet = get_diet_with_ingredients(date, diet_id, token).await?;
+        if ! alternative_diet.diet_elements.members.is_empty() {
+            return Ok(alternative_diet);
+        }
+    }
+
+    Ok(primary_diet)
+}
+
 async fn get_diet_with_ingredients(
     date: &DateTime<Local>,
     diet_id: i64,
@@ -283,18 +309,23 @@ async fn select_dishes_for_day(
         .wrap_err_with(|| format!("find diet day for {date}"))?
         .ok_or_else(|| eyre::eyre!("no diet for date {date}"))?
         .id;
-    let calendar_day_items = get_diet_with_ingredients(&date, diet_id, token)
+    let calendar_day_items = get_diet_with_ingredients_with_fallback_search(&date, diet_id, diets, token)
         .await
         .wrap_err("getting diet with ingredients")?;
     clear_status();
     println!("{}, {}", date.format("%Y-%m-%d"), date.format("%A"));
     println!("{}", calendar_day_items.debug_options());
+
     let last_days_choices = fetch_historical_orders(token, diets, &date, FETCH_HISTORY_DAYS)
         .await
         .wrap_err("fetching historical orders")?;
     cache::IngredientsCache::get_instance()
         .save()
         .wrap_err("saving ingredients cache")?;
+    if calendar_day_items.diet_elements.members.is_empty() {
+        return Err(eyre::eyre!("No diet elements available for date {}", date.format("%Y-%m-%d")));
+    }
+
     status("Ai is thinking...");
     let result = ai::select_dish(
         date.date_naive(),

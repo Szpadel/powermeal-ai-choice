@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use async_openai::{
     config::OpenAIConfig,
     types::{
@@ -8,14 +6,34 @@ use async_openai::{
     },
     Client,
 };
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use dialoguer::{theme::ColorfulTheme, FuzzySelect, Input};
 use eyre::{Context, Report, Result};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::{
+    collections::HashMap,
+    fs::{create_dir_all, OpenOptions},
+    io::Write,
+    path::PathBuf,
+};
 
-use crate::{preferences::{AiConfig, Preferences}, CalendarDayItems, DishItem};
+use crate::{
+    preferences::{AiConfig, Preferences},
+    prompts, CalendarDayItems, DishItem,
+};
+
+// Candidate dish with explicit named fields (replaces previous tuple alias)
+#[derive(Debug, Clone)]
+struct CandidateDish {
+    _dish_id: String,
+    name: String,
+    ingredients: Vec<String>,
+}
+
+// Mapping: dish_item_id -> list of candidate dishes
+type DishItemCandidates = HashMap<String, Vec<CandidateDish>>;
 
 #[derive(Debug, Serialize)]
 pub struct SelectDishQuestion {
@@ -159,16 +177,33 @@ pub async fn select_dish(
 
     let client = get_openai_client(&ai_config);
 
+    if dish_items.is_empty() {
+        return Err(eyre::eyre!("No dish items provided to select_dish function"));
+    }
+
     let mut dish_item_name = HashMap::new();
     let mut dish_name = HashMap::new();
+    // dish_item_id -> list of (dish_id, dish_name, ingredients)
+    let mut dish_item_candidates: DishItemCandidates = HashMap::new();
 
     let mut properties = serde_json::Map::new();
     for dish_item in dish_items {
         let dish_item_id = dish_item.id.clone();
         dish_item_name.insert(dish_item_id.clone(), dish_item.meal_type.name.clone());
+        let mut candidates: Vec<CandidateDish> = Vec::new();
         for dish in &dish_item.options() {
             dish_name.insert(dish.dish.id.clone(), dish.name.clone());
+            candidates.push(CandidateDish {
+                _dish_id: dish.dish.id.clone(),
+                name: dish.name.clone(),
+                ingredients: dish
+                    .ingredients
+                    .as_ref()
+                    .map(|i| i.ingredients.clone())
+                    .unwrap_or_default(),
+            });
         }
+        dish_item_candidates.insert(dish_item_id.clone(), candidates);
         let dish_item_schema = json!({
             "type": "object",
             "properties": {
@@ -245,15 +280,18 @@ pub async fn select_dish(
         menu_date: date,
     };
 
+    let system_prompt = prompts::build_meal_selection_system_prompt(
+        user_preferences,
+        !last_days_choices.is_empty(),
+    );
+
+
     let request = CreateChatCompletionRequestArgs::default()
         .max_tokens(1024u32 * 40)
         .model(&ai_config.model)
-        .reasoning_effort(ReasoningEffort::High)
+        // .reasoning_effort(ReasoningEffort::High)
         .messages([
-            ChatCompletionRequestSystemMessage::from(
-                "You are personal meal assistant. You have to select meals for the user. Figure out what the user wants to eat from the menu. Use historic data to figure out user preferences. Try not to pick the same meal as the user had in the last days.",
-            )
-            .into(),
+            ChatCompletionRequestSystemMessage::from(system_prompt).into(),
             ChatCompletionRequestUserMessage::from(serde_json::to_string(&question).unwrap()).into(),
         ])
         .response_format(response_format)
@@ -278,6 +316,17 @@ pub async fn select_dish(
                 }
 
                 let response: AiResponse = serde_json::from_str(content).wrap_err(format!("in ai response: {content}"))?;
+
+                // Log human readable AI response; ignore logging errors
+                if let Err(e) = log_ai_response(
+                    date,
+                    &response,
+                    &dish_item_name,
+                    &dish_name,
+                    &dish_item_candidates,
+                ) {
+                    tracing::warn!(error = ?e, "Failed to write AI response log");
+                }
                 return Ok(response);
             }
             eyre::bail!("No content in response from AI");
@@ -285,6 +334,79 @@ pub async fn select_dish(
         eyre::bail!("No response from AI");
     }
 }
+
+fn ai_log_path() -> Option<PathBuf> {
+    // Determine a sensible per-user log location.
+    // Prefer XDG_STATE_HOME, fallback to ~/.local/state
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("state")))?;
+    Some(base.join("powermeal-ai-choice").join("ai_responses.log"))
+}
+
+fn log_ai_response(
+    date: NaiveDate,
+    response: &AiResponse,
+    dish_item_name: &HashMap<String, String>,
+    dish_name: &HashMap<String, String>,
+    dish_item_candidates: &DishItemCandidates,
+) -> eyre::Result<()> {
+    let path = match ai_log_path() {
+        Some(p) => p,
+        None => return Ok(()), // silently ignore if we cannot determine path
+    };
+    if let Some(parent) = path.parent() {
+        create_dir_all(parent)?;
+    }
+    let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+    writeln!(
+        f,
+        "=== AI Meal Selection {} (generated {}) ===",
+        date,
+        Utc::now().to_rfc3339()
+    )?;
+    if !response.reasoning.is_empty() {
+        writeln!(f, "Reasoning:")?;
+        for line in &response.reasoning {
+            writeln!(f, "- {}", line.trim())?;
+        }
+    }
+    writeln!(f, "Selections:")?;
+    for (dish_item_id, selection) in &response.selections {
+        let meal_type = dish_item_name
+            .get(dish_item_id)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let human_dish_name = dish_name
+            .get(&selection.dish_id)
+            .map(|s| s.as_str())
+            .unwrap_or(&selection.dish_id);
+        writeln!(f, "[{meal_type}] {human_dish_name}",)?;
+        // Log candidate dishes (all available options for this dish item)
+        if let Some(cands) = dish_item_candidates.get(dish_item_id) {
+            if !cands.is_empty() {
+                writeln!(f, "  Candidates:")?;
+                for cand in cands {
+                    writeln!(f, "    - {}", cand.name)?;
+                    if !cand.ingredients.is_empty() {
+                        writeln!(f, "      Ingredients: {}", cand.ingredients.join(", "))?;
+                    }
+                }
+            }
+        }
+        writeln!(f, "  Reason: {}", selection.reason.trim())?;
+        if !selection.analysis.is_empty() {
+            writeln!(f, "  Analysis:")?;
+            for (opt_id, text) in &selection.analysis {
+                let opt_name = dish_name.get(opt_id).map(|s| s.as_str()).unwrap_or(opt_id);
+                writeln!(f, "    - {}: {}", opt_name, text.trim())?;
+            }
+        }
+    }
+    writeln!(f)?; // blank line separator
+    Ok(())
+}
+
 pub async fn ai_generate_preferences(
     adjustments: &[UserAdjustment],
     cfg: &AiConfig,
@@ -292,19 +414,7 @@ pub async fn ai_generate_preferences(
     use async_openai::types::*;
     let client = get_openai_client(cfg);
 
-    let system_prompt = r#"
-You are a dietary preference analyzer. Synthesize the provided list of user adjustments into a
-coherent, natural language description of dietary preferences. Guidelines:
-
-- Write in first-person perspective ("I prefer...", "I avoid...")
-- Group similar preferences together (allergies, preferences, restrictions)
-- Infer dietary patterns from recurring adjustments
-- Keep it concise (4-8 bullet points or short paragraphs)
-- Include specific foods to avoid or prefer
-- Mention reasoning when explicitly provided
-- Format naturally without technical formatting (JSON, markdown, etc.)
-
-Output ONLY the preference description without additional commentary."#;
+    let system_prompt = prompts::PREFERENCE_SUMMARY_SYSTEM_PROMPT;
 
     let user = format!(
         "Convert these historical meal adjustments into user-friendly dietary preferences:\n\n{}",
