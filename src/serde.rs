@@ -136,7 +136,7 @@ pub struct DietsList {
     pub members: Vec<Diet>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Diet {
     pub id: i64,
     #[serde(rename = "firstDeliveryDate")]
@@ -191,6 +191,7 @@ pub enum DietDayState {
     #[serde(rename = "DISABLED")]
     Disabled,
     #[serde(rename = "NOT_DELIVERED_CAN_SELECT_MENU")]
+    #[serde(alias = "NOT_DELIVERED_HAS_SELECTED_MENU")]
     NotDeliveredCanSelectMenu,
 }
 

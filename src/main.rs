@@ -241,25 +241,28 @@ async fn get_diet_with_ingredients_with_fallback_search(
     date: &DateTime<Local>,
     primary_diet_id: i64,
     all_diets: &DietsList,
-    token: &str
-) -> eyre::Result<CalendarDayItems> {
+    token: &str,
+) -> eyre::Result<(CalendarDayItems, Diet)> {
+    let primary_diet_obj = all_diets.members.iter().find(|d| d.id == primary_diet_id).ok_or_else(|| {
+        eyre::eyre!("Primary diet with ID {primary_diet_id} not found in the list of diets")
+    })?;
     let primary_diet = get_diet_with_ingredients(date, primary_diet_id, token).await?;
     if ! primary_diet.diet_elements.members.is_empty() {
-        return Ok(primary_diet);
+        return Ok((primary_diet, primary_diet_obj.clone()));
     }
 
-    for diet_id in all_diets.members.iter().map(|d| d.id) {
-        if diet_id == primary_diet_id {
+    for diet in &all_diets.members {
+        if diet.id == primary_diet_id {
             continue;
         }
 
-        let alternative_diet = get_diet_with_ingredients(date, diet_id, token).await?;
+        let alternative_diet = get_diet_with_ingredients(date, diet.id, token).await?;
         if ! alternative_diet.diet_elements.members.is_empty() {
-            return Ok(alternative_diet);
+            return Ok((alternative_diet, diet.clone()));
         }
     }
 
-    Ok(primary_diet)
+    Ok((primary_diet, primary_diet_obj.clone()))
 }
 
 async fn get_diet_with_ingredients(
@@ -309,9 +312,10 @@ async fn select_dishes_for_day(
         .wrap_err_with(|| format!("find diet day for {date}"))?
         .ok_or_else(|| eyre::eyre!("no diet for date {date}"))?
         .id;
-    let calendar_day_items = get_diet_with_ingredients_with_fallback_search(&date, diet_id, diets, token)
+    let (calendar_day_items, diet) = get_diet_with_ingredients_with_fallback_search(&date, diet_id, diets, token)
         .await
         .wrap_err("getting diet with ingredients")?;
+    let diet_id = diet.id;
     clear_status();
     println!("{}, {}", date.format("%Y-%m-%d"), date.format("%A"));
     println!("{}", calendar_day_items.debug_options());
