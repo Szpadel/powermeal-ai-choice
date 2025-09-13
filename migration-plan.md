@@ -184,10 +184,10 @@ pub struct DeliveryRule {
 ```
 
 **Tasks**:
-- [ ] Create all new structures
-- [ ] Add proper serde annotations
-- [ ] Implement helper methods
-- [ ] Add Debug derives
+- [x] Create all new structures
+- [x] Add proper serde annotations
+- [x] Implement helper methods
+- [x] Add Debug derives
 
 ### Phase 3: Implement New API Client Functions
 **Goal**: Create new API client with proper error handling
@@ -606,7 +606,7 @@ impl DietCache {
 Mark completed items with ✓ and in-progress with ⚡
 
 - [✓] Phase 1: Remove old API code (Completed 2025-01-13)
-- [ ] Phase 2: Implement new data models
+- [✓] Phase 2: Implement new data models (Completed 2025-01-13)
 - [ ] Phase 3: Create new API client
 - [ ] Phase 4: Implement availability validation
 - [ ] Phase 5: Rewrite main workflow
@@ -618,7 +618,7 @@ Mark completed items with ✓ and in-progress with ⚡
 
 ### Critical Milestones
 
-1. **Milestone 1**: Old code removed, new models ready ✓ Phase 1 Complete
+1. **Milestone 1**: Old code removed, new models ready ✓ Phase 1 & 2 Complete
 2. **Milestone 2**: API client functional with auth
 3. **Milestone 3**: Basic workflow operational
 4. **Milestone 4**: Full feature parity achieved
@@ -664,6 +664,35 @@ When resuming work:
 - Begin Phase 2: Implement new data models
 - Create structures for new PowerFoods API
 - Start with ClientDietsResponse, ClientDiet, MenuResponse, etc.
+
+### Phase 2 Completion Notes (2025-01-13)
+
+**Completed Actions:**
+- Implemented all new data structures in `src/serde.rs`:
+  - ClientDietsResponse & ClientDietsData for diet listing
+  - ClientDiet with all fields from API specification
+  - ClientDietDetails & DietDetailsData for detailed diet information
+  - ClientDietItem for individual diet days
+  - DishInfo for basic dish information within diet items
+  - MenuResponse & MenuDish for menu operations with full nutritional data
+  - DishUpdateRequest for updating dish selections
+  - DeliveryConfig, DeliveryData & DeliveryRule for delivery configuration
+- Added proper serde derives (Debug, Deserialize, Serialize, Clone) to all structures
+- Added serde rename attributes where needed (e.g., totalDays → total_days)
+- Used Option<T> for nullable/optional fields
+- Kept placeholder structures temporarily for backward compatibility
+- All structures follow Rust naming conventions with proper serde mappings
+
+**Current State:**
+- All new data models implemented and ready for use
+- Code passes `cargo clippy` (warnings are for unused code due to migration)
+- Code compiles successfully with `cargo build`
+- Ready to implement API client functions in Phase 3
+
+**Next Steps:**
+- Begin Phase 3: Implement new API client functions
+- Create JWT brand_id extraction
+- Implement all API endpoints with retry logic
 
 ## Implementation Order (Recommended)
 
