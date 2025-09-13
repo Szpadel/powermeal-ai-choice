@@ -189,94 +189,34 @@ pub struct DeliveryRule {
 - [x] Implement helper methods
 - [x] Add Debug derives
 
-### Phase 3: Implement New API Client Functions
+### Phase 3: Implement New API Client Functions ✓ COMPLETED (2025-01-13)
 **Goal**: Create new API client with proper error handling
 
-**New Functions in `src/api.rs`**:
+**Completed Implementation in `src/api.rs`**:
+- ✓ Added base64 dependency to Cargo.toml
+- ✓ Implemented `API_BASE` constant
+- ✓ Created `ApiError` enum for proper error handling (retryable vs non-retryable)
+- ✓ Implemented `extract_brand_id` - JWT token parsing to extract brand_id
+- ✓ Implemented `fetch_client_diets` - Get active client diets
+- ✓ Implemented `fetch_diet_details` - Get diet details with days
+- ✓ Implemented `fetch_menu` - Get menu (all available or current selections)
+- ✓ Implemented `update_dish_selection` - Update single dish selection
+- ✓ Implemented `fetch_delivery_config` - Get delivery configuration
+- ✓ Enhanced `send_request_with_retry` - Exponential backoff for 5xx errors
+- ✓ Proper error handling with typed ApiError enum (no string matching)
 
-```rust
-// Base URL constant
-const API_BASE: &str = "https://api.powerfoods.pl/api/v1";
-
-// Extract brand_id from JWT token
-pub fn extract_brand_id(token: &str) -> eyre::Result<i32> {
-    // Decode JWT payload (base64)
-    // Parse JSON
-    // Extract brand_id field
-}
-
-// Fetch active client diets
-pub async fn fetch_client_diets(token: &str, brand_id: i32) -> eyre::Result<ClientDietsResponse> {
-    let url = format!("{}/clientDiets?brand_id={}&type=active", API_BASE, brand_id);
-    // Implementation with retry logic
-}
-
-// Fetch diet details with days
-pub async fn fetch_diet_details(token: &str, client_diet_id: i64) -> eyre::Result<ClientDietDetails> {
-    let url = format!("{}/clientDiets/{}", API_BASE, client_diet_id);
-    // Implementation
-}
-
-// Fetch menu (all available or current selections)
-pub async fn fetch_menu(
-    token: &str,
-    diet_id: i64,
-    var_id: i64,
-    var_cal_id: i64,
-    date: &str,
-    menu_type: &str, // "all" or "client"
-    brand_id: i32,
-    client_diet_id: i64,
-) -> eyre::Result<MenuResponse> {
-    // Build URL with all parameters
-    // Implementation
-}
-
-// Update single dish selection
-pub async fn update_dish_selection(
-    token: &str,
-    update: &DishUpdateRequest,
-) -> eyre::Result<()> {
-    let url = format!("{}/clientDiets/dish", API_BASE);
-    // POST request
-}
-
-// Fetch delivery configuration
-pub async fn fetch_delivery_config(token: &str, brand_id: i32) -> eyre::Result<DeliveryConfig> {
-    let url = format!("{}/diets/delivery?brand_id={}", API_BASE, brand_id);
-    // Implementation
-}
-
-// Core request function with retry logic
-async fn send_request_with_retry(
-    url: &str,
-    token: &str,
-    method: Method,
-    body: Option<String>,
-) -> eyre::Result<String> {
-    let mut retries = 0;
-    let max_retries = 10;
-
-    loop {
-        match send_request(url, token, method.clone(), body.clone()).await {
-            Ok(response) => return Ok(response),
-            Err(e) if is_server_error(&e) && retries < max_retries => {
-                let delay = 2_u64.pow(retries);
-                tokio::time::sleep(Duration::from_secs(delay)).await;
-                retries += 1;
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-}
-```
+**Key Design Decisions**:
+- Used enum-based error handling instead of string matching for reliability
+- Separated rate limiting (429) from server errors (5xx) in retry logic
+- Rate limiting handled with automatic retry inside send_request
+- Server errors use exponential backoff up to 10 retries
+- Client errors (4xx) fail immediately without retry
 
 **Tasks**:
-- [ ] Implement JWT brand_id extraction
-- [ ] Create all API functions
-- [ ] Add retry logic for 500 errors
-- [ ] Implement proper error context
+- [x] Implement JWT brand_id extraction
+- [x] Create all API functions
+- [x] Add retry logic for 500 errors with proper enum
+- [x] Implement proper error context
 
 ### Phase 4: Implement Availability Validation
 **Goal**: Client-side validation for menu selection availability
@@ -607,7 +547,7 @@ Mark completed items with ✓ and in-progress with ⚡
 
 - [✓] Phase 1: Remove old API code (Completed 2025-01-13)
 - [✓] Phase 2: Implement new data models (Completed 2025-01-13)
-- [ ] Phase 3: Create new API client
+- [✓] Phase 3: Create new API client (Completed 2025-01-13)
 - [ ] Phase 4: Implement availability validation
 - [ ] Phase 5: Rewrite main workflow
 - [ ] Phase 6: Adapt ingredients system
@@ -619,7 +559,7 @@ Mark completed items with ✓ and in-progress with ⚡
 ### Critical Milestones
 
 1. **Milestone 1**: Old code removed, new models ready ✓ Phase 1 & 2 Complete
-2. **Milestone 2**: API client functional with auth
+2. **Milestone 2**: API client functional with auth ✓ Phase 3 Complete
 3. **Milestone 3**: Basic workflow operational
 4. **Milestone 4**: Full feature parity achieved
 5. **Milestone 5**: Testing complete, ready for use
@@ -689,10 +629,41 @@ When resuming work:
 - Code compiles successfully with `cargo build`
 - Ready to implement API client functions in Phase 3
 
+**Next Steps (Completed):**
+- ✓ Begin Phase 3: Implement new API client functions
+- ✓ Create JWT brand_id extraction
+- ✓ Implement all API endpoints with retry logic
+
+### Phase 3 Completion Notes (2025-01-13)
+
+**Completed Actions:**
+- Added base64 dependency (v0.22) to Cargo.toml for JWT decoding
+- Implemented all 6 new API functions in `src/api.rs`:
+  - `extract_brand_id`: Decodes JWT token to extract brand_id from payload
+  - `fetch_client_diets`: Gets active client diets from API
+  - `fetch_diet_details`: Fetches detailed diet information with days
+  - `fetch_menu`: Retrieves menu options (all available or current selections)
+  - `update_dish_selection`: Updates a single dish selection
+  - `fetch_delivery_config`: Gets delivery configuration for availability checks
+- Created `ApiError` enum for proper error categorization:
+  - ServerError (5xx) - retryable with exponential backoff
+  - ClientError (4xx) - immediate failure
+  - RateLimited (429) - handled with Retry-After header
+  - Other - network or parsing errors
+- Enhanced retry logic with proper error type handling (no string matching)
+- All functions use async/await pattern with eyre::Result return types
+- Code passes `cargo clippy` (warnings are expected for unused code during migration)
+- Code passes `cargo test`
+
+**Current State:**
+- API client layer fully implemented and ready for use
+- All functions properly handle errors and retry logic
+- Ready for Phase 4: Implement availability validation
+
 **Next Steps:**
-- Begin Phase 3: Implement new API client functions
-- Create JWT brand_id extraction
-- Implement all API endpoints with retry logic
+- Begin Phase 4: Implement availability validation module
+- Create timezone-aware availability checking
+- Implement delivery configuration parsing
 
 ## Implementation Order (Recommended)
 
