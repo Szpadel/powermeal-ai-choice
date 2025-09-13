@@ -1,17 +1,16 @@
 pub mod ai;
 mod api;
-mod cache;
 mod preferences;
 pub mod prompts;
 pub mod serde;
 mod availability;
 
-use crate::cache::IngredientsCache;
+use ai::select_dish;
 use api::{extract_brand_id, fetch_client_diets, fetch_diet_details, fetch_menu, update_dish_selection, fetch_delivery_config};
 use availability::is_menu_selection_available;
 use chrono::{Local, NaiveDate};
 use clap::{Parser, Subcommand};
-// use dialoguer::Confirm; // TODO: Phase 5 - Re-enable when dialoguer is available
+use dialoguer::{Confirm, Select, theme::ColorfulTheme};
 use eyre::{Context, eyre};
 use preferences::Preferences;
 use serde::{ClientDiet, MenuDish, DishUpdateRequest, DeliveryConfig};
@@ -67,7 +66,6 @@ async fn print_with_delay(message: &str, delay_ms: u64) {
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     init_tracing();
-    let _cache = IngredientsCache::get_instance();
 
     let mut preferences = Preferences::load_preferences();
 
@@ -121,8 +119,12 @@ async fn main() -> eyre::Result<()> {
     let delivery_config = fetch_delivery_config(&token, brand_id).await
         .wrap_err("Failed to fetch delivery configuration")?;
 
-    // Find available days
-    let available_days = find_available_days(&token, &client_diets.data.diets, &delivery_config).await?;
+    // Get the resume date from preferences (where we left off)
+    let resume_from = Preferences::next_day_to_check()
+        .map(|dt| dt.date_naive());
+
+    // Find available days starting from resume date
+    let available_days = find_available_days(&token, &client_diets.data.diets, &delivery_config, resume_from).await?;
 
     if available_days.is_empty() {
         clear_status();
@@ -1287,16 +1289,12 @@ fn edit_preferences_cli(preferences: &Preferences) -> eyre::Result<()> {
         println!("Describe your dietary requirements, portion preferences, allergens, and dietary goals.");
         println!("Example: 'I'm vegetarian, avoid dairy, love spicy food, need ~2000 kcal/day'");
 
-        // TODO: Phase 5 - Re-enable interactive confirmation with dialoguer
-        println!("Opening editor to create preferences...");
-        /*
-        if !dialoguer::Confirm::new()
+        if !Confirm::new()
             .with_prompt("Open editor to create preferences?")
             .interact()?
         {
             return Ok(());
         }
-        */
     }
 
     let content = if is_new {
@@ -1319,21 +1317,15 @@ fn edit_preferences_cli(preferences: &Preferences) -> eyre::Result<()> {
     }
 
     if trimmed != existing {
-        // TODO: Phase 5 - Re-enable interactive confirmation with dialoguer
-        println!("Saving the changes to your preferences...");
-        /*
-        if dialoguer::Confirm::new()
+        if Confirm::new()
             .with_prompt("Save the changes to your preferences?")
             .interact()?
         {
-        */
             let mut prefs = Preferences::load_preferences();
             prefs.user_preferences = trimmed;
             prefs.save_preferences();
             println!("Preferences updated successfully.");
-        /*
         }
-        */
     } else {
         println!("No changes detected in the edited preferences.");
     }
@@ -1357,9 +1349,12 @@ async fn find_available_days(
     token: &str,
     diets: &[ClientDiet],
     delivery_config: &DeliveryConfig,
+    start_from: Option<NaiveDate>,
 ) -> eyre::Result<Vec<AvailableDay>> {
     let mut available_days = Vec::new();
     let today = Local::now().date_naive();
+    // Use the later of today or the provided start date
+    let start_date = start_from.map(|d| d.max(today)).unwrap_or(today);
 
     for diet in diets {
         // Fetch diet details to get all days
@@ -1373,8 +1368,8 @@ async fn find_available_days(
             let delivery_date = NaiveDate::parse_from_str(&item.date_dlv, "%Y-%m-%d")
                 .wrap_err(format!("Failed to parse date: {}", item.date_dlv))?;
 
-            // Skip past dates
-            if delivery_date <= today {
+            // Skip dates before our start date
+            if delivery_date <= start_date {
                 continue;
             }
 
@@ -1416,7 +1411,7 @@ fn group_dishes_by_meal(dishes: &[MenuDish]) -> HashMap<i32, Vec<MenuDish>> {
     for dish in dishes {
         grouped
             .entry(dish.meal_seq)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(dish.clone());
     }
 
@@ -1428,28 +1423,6 @@ fn group_dishes_by_meal(dishes: &[MenuDish]) -> HashMap<i32, Vec<MenuDish>> {
     grouped
 }
 
-// Parse ingredients from dish ingredient names field
-fn parse_ingredients_from_dish(dish: &MenuDish) -> Vec<String> {
-    let mut ingredients = Vec::new();
-
-    // dish_ing_names format: "Ingredient1(details),Ingredient2(details),..."
-    // We want to extract just the ingredient names before parentheses
-    for part in dish.dish_ing_names.split(',') {
-        let trimmed = part.trim();
-        if let Some(paren_pos) = trimmed.find('(') {
-            // Extract ingredient name before parentheses
-            let ingredient = trimmed[..paren_pos].trim().to_string();
-            if !ingredient.is_empty() {
-                ingredients.push(ingredient);
-            }
-        } else if !trimmed.is_empty() {
-            // No parentheses, use the whole part
-            ingredients.push(trimmed.to_string());
-        }
-    }
-
-    ingredients
-}
 
 // Submit menu updates sequentially for each meal
 async fn submit_menu_updates(
@@ -1467,7 +1440,10 @@ async fn submit_menu_updates(
             client_diet_item_id: day.client_diet_item_id,
             dish_id: dish.dish_id,
             diet_id: day.diet_id,
-            var_cal_meal_id: dish.var_cal_meal_id,
+            var_cal_meal_id: dish.var_cal_meal_id.unwrap_or_else(|| {
+                eprintln!("Warning: var_cal_meal_id missing for dish {}", dish.dish_name);
+                0
+            }),
         };
 
         // Submit the update
@@ -1488,33 +1464,64 @@ async fn submit_menu_updates(
     Ok(())
 }
 
+// Fetch meal history for the past N days
+async fn fetch_meal_history(
+    token: &str,
+    brand_id: i32,
+    client_diet_id: i64,
+    diet_id: i64,
+    var_id: i64,
+    var_cal_id: i64,
+    days: i32,
+) -> eyre::Result<Vec<MenuDish>> {
+    use chrono::{Duration, Local};
+
+    let mut history = Vec::new();
+    let today = Local::now().date_naive();
+
+    // Fetch history for each past day
+    for i in 1..=days {
+        let date = today - Duration::days(i.into());
+        let date_str = date.format("%Y-%m-%d").to_string();
+
+        // Try to fetch menu for this date
+        match fetch_menu(
+            token,
+            diet_id,
+            var_id,
+            var_cal_id,
+            &date_str,
+            "client",  // Get what was actually selected
+            brand_id,
+            client_diet_id,
+        ).await {
+            Ok(menu) => {
+                // Add all dishes from this day to history
+                history.extend(menu.data);
+            },
+            Err(e) => {
+                // Log the error but continue with other days
+                tracing::debug!("Could not fetch history for {}: {}", date_str, e);
+                continue;
+            }
+        }
+    }
+
+    Ok(history)
+}
+
 async fn process_day_selection(
     token: &str,
     day: &AvailableDay,
-    _preferences: &Preferences,
+    preferences: &Preferences,
     yolo: bool,
     brand_id: i32,
 ) -> eyre::Result<()> {
-    // Display which day we're processing
-    println!("\nProcessing menu selection for: {}", day.date);
+    let date = NaiveDate::parse_from_str(&day.date, "%Y-%m-%d")
+        .wrap_err("Failed to parse date")?;
 
-    // Fetch all available menu options for this day
-    status("Fetching available menu options...");
-    let all_menu = fetch_menu(
-        token,
-        day.diet_id,
-        day.var_id,
-        day.var_cal_id,
-        &day.date,
-        "all",
-        brand_id,
-        day.client_diet_id,
-    )
-    .await
-    .wrap_err("Failed to fetch available menu options")?;
-
-    // Fetch current menu selections
-    status("Fetching current menu selections...");
+    // Fetch current menu selections first
+    status("Fetching menu...");
     let current_menu = fetch_menu(
         token,
         day.diet_id,
@@ -1528,60 +1535,173 @@ async fn process_day_selection(
     .await
     .wrap_err("Failed to fetch current menu selections")?;
 
+    // Fetch all available menu options
+    let all_menu = fetch_menu(
+        token,
+        day.diet_id,
+        day.var_id,
+        day.var_cal_id,
+        &day.date,
+        "all",
+        brand_id,
+        day.client_diet_id,
+    )
+    .await
+    .wrap_err("Failed to fetch available menu options")?;
+
     clear_status();
 
-    // Group dishes by meal for better organization
+    // Display date and current menu (matching original debug_options format)
+    println!("{}, {}", day.date, date.format("%A"));
+
+    // Group dishes by meal
     let available_by_meal = group_dishes_by_meal(&all_menu.data);
     let current_by_meal = group_dishes_by_meal(&current_menu.data);
 
-    // Build list of selections (will be replaced by AI recommendations in Phase 6)
-    let mut selections = Vec::new();
-
-    // TODO: Phase 6 - Replace with AI recommendations
-    // For now, use simple selection logic: pick first available dish if no current selection
+    // Display current menu in the original debug_options format
     for (meal_seq, available_dishes) in &available_by_meal {
         if available_dishes.is_empty() {
             continue;
         }
 
-        // Check if there's a current selection for this meal
+        let meal_name = &available_dishes[0].meal_name;
+        println!("{}", meal_name);
+
+        // Get current selection for this meal
+        let current_dish_id = current_by_meal
+            .get(meal_seq)
+            .and_then(|dishes| dishes.first())
+            .map(|d| d.dish_id)
+            .unwrap_or(-1);
+
+        // Display all options with [*] for selected
+        for dish in available_dishes {
+            let marker = if dish.dish_id == current_dish_id { "*" } else { " " };
+            println!("  [{}] {}", marker, dish.dish_name);
+        }
+    }
+
+    // Check if there are any meals to select
+    if available_by_meal.is_empty() {
+        println!("\nNo meals available for selection on this day.");
+        return Ok(());
+    }
+
+    // Fetch meal history for AI context
+    let meal_history = fetch_meal_history(
+        token,
+        brand_id,
+        day.client_diet_id,
+        day.diet_id,
+        day.var_id,
+        day.var_cal_id,
+        FETCH_HISTORY_DAYS as i32,
+    )
+    .await
+    .wrap_err("Failed to fetch meal history")?;
+
+    // Call AI to get recommendations
+    status("AI is thinking...");
+    let ai_response = select_dish(
+        date,
+        &available_by_meal,
+        &current_by_meal,
+        &meal_history,
+        &preferences.user_preferences,
+    )
+    .await
+    .wrap_err("Failed to get AI recommendations")?;
+
+    clear_status();
+    println!();
+
+    // Display ALL AI reasoning first (matching original)
+    for reason in &ai_response.reasoning {
+        print_with_delay(&format!(" 𝔞𝔦 {}", reason), 1).await;
+    }
+
+    // Interactive meal selection
+    let mut selections = Vec::new();
+    println!();
+
+    for (meal_seq, available_dishes) in &available_by_meal {
+        if available_dishes.is_empty() {
+            continue;
+        }
+
+        let meal_name = &available_dishes[0].meal_name;
+
+        // Get current selection for this meal
         let current_dish = current_by_meal
             .get(meal_seq)
             .and_then(|dishes| dishes.first());
 
-        // Display meal options - use meal_name from the first dish (all dishes in group have same meal)
-        let meal_name = &available_dishes[0].meal_name;
-        println!("\n{meal_name}:");
+        // Get AI recommendation for this meal
+        let ai_selection = ai_response.selections.get(meal_name);
 
-        for dish in available_dishes {
-            let is_current = current_dish
-                .map(|c| c.dish_id == dish.dish_id)
-                .unwrap_or(false);
-
-            let checkbox = if is_current { "[X]" } else { "[ ]" };
-            println!("  {checkbox} {}", dish.dish_name);
-
-            // Show ingredients preview (first few)
-            let ingredients = parse_ingredients_from_dish(dish);
-            if !ingredients.is_empty() {
-                let preview = ingredients.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
-                let suffix = if ingredients.len() > 3 { "..." } else { "" };
-                println!("      Ingredients: {preview}{suffix}");
-            }
-        }
-
-        // For now, select the current dish if available, otherwise the first dish
-        // TODO: Phase 6 - Use AI recommendations here
-        let selected_dish = if let Some(current) = current_dish {
-            current.clone()
+        // Find which dish the AI recommended
+        let ai_recommended_idx = if let Some(ai_sel) = ai_selection {
+            available_dishes.iter()
+                .position(|d| d.dish_id.to_string() == ai_sel.dish_id)
+                .unwrap_or(0)
         } else {
-            available_dishes[0].clone()
+            // If no AI recommendation, default to current or first
+            current_dish
+                .and_then(|c| available_dishes.iter().position(|d| d.dish_id == c.dish_id))
+                .unwrap_or(0)
         };
 
-        // Only add to selections if it's different from current
-        if current_dish.map(|c| c.dish_id != selected_dish.dish_id).unwrap_or(true) {
-            selections.push((*meal_seq, selected_dish));
+        // Display AI analysis for each dish option (matching original format)
+        if let Some(ai_sel) = ai_selection {
+            for (dish_id, analysis) in &ai_sel.analysis {
+                if let Some(dish) = available_dishes.iter().find(|d| d.dish_id.to_string() == *dish_id) {
+                    print_with_delay(
+                        &format!(
+                            " 𝔞𝔦 \x1b[1m{}\x1b[0m {}",
+                            dish.dish_name,
+                            analysis
+                        ),
+                        1
+                    ).await;
+                }
+            }
+            println!();
+            print_with_delay(&format!(" 𝔞𝔦 {}", ai_sel.reason), 1).await;
         }
+
+        // Handle selection (interactive or YOLO mode)
+        let selected_idx = if yolo {
+            println!(" [auto-selected by AI]");
+            ai_recommended_idx
+        } else {
+            // Use dialoguer for interactive selection
+            Select::with_theme(&ColorfulTheme::default())
+                .with_prompt(meal_name.to_string())
+                .items(
+                    &available_dishes
+                        .iter()
+                        .map(|x| x.dish_name.as_str())
+                        .collect::<Vec<_>>(),
+                )
+                .default(ai_recommended_idx)
+                .interact()?
+        };
+
+        let selected_dish = &available_dishes[selected_idx];
+
+        // Check if selection differs from AI recommendation
+        if selected_idx != ai_recommended_idx {
+            println!("\nYour choice differs from the AI's suggestion.");
+            println!("To make this change permanent for future selections, run: powermeal edit-preferences");
+        }
+
+        // Only add to selections if it's different from current
+        let current_dish_id = current_dish.map(|c| c.dish_id).unwrap_or(-1);
+        if selected_dish.dish_id != current_dish_id {
+            selections.push((*meal_seq, selected_dish.clone()));
+        }
+
+        println!();
     }
 
     // Handle user confirmation and submission
@@ -1590,34 +1710,40 @@ async fn process_day_selection(
         return Ok(());
     }
 
-    // Show proposed changes
-    println!("\nProposed menu changes:");
+    // Show proposed changes with color formatting
+    println!("Menu changes:");
     for (_meal_seq, dish) in &selections {
-        println!("  {}: {}", dish.meal_name, dish.dish_name);
+        // Find what this is replacing
+        if let Some(current_dishes) = current_by_meal.get(_meal_seq) {
+            if let Some(current) = current_dishes.first() {
+                println!("\x1b[1m{}\x1b[0m", dish.meal_name);
+                println!(
+                    "  \x1b[31m{}\x1b[0m -> \x1b[32m{}\x1b[0m",
+                    current.dish_name,
+                    dish.dish_name
+                );
+            }
+        }
     }
 
     // Ask for confirmation unless in YOLO mode
-    let should_save = if yolo {
-        println!("[Auto-accepting changes in YOLO mode]");
-        true
-    } else {
-        // TODO: Phase 5 - Re-enable interactive confirmation with dialoguer
-        // For now, always save
-        println!("Would you like to save these changes? [Y/n]");
-        true  // Temporarily always save until dialoguer is re-enabled
-        /*
-        Confirm::new()
-            .with_prompt("Save menu changes?")
-            .default(true)
-            .interact()?
-        */
-    };
+    let should_save = yolo || Confirm::new()
+        .with_prompt("Save menu changes?")
+        .default(true)
+        .interact()?;
 
     if should_save {
+        status("Saving menu changes...");
         submit_menu_updates(token, &selections, day, brand_id).await?;
-    } else {
-        println!("Changes cancelled");
+        clear_status();
+
+        // Update last_day_selected to mark this day as processed
+        let next_day = date.succ_opt()
+            .ok_or_else(|| eyre!("Failed to get next day"))?;
+        Preferences::set_next_day_to_check(next_day);
     }
+
+    println!();
 
     Ok(())
 }

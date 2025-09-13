@@ -341,40 +341,40 @@ async fn submit_menu_updates(
 - [x] Add progress indicators (status messages)
 - [x] Create helper functions (group_dishes_by_meal, parse_ingredients_from_dish)
 
-### Phase 6: Update AI Integration
-**Goal**: Adapt AI system to work with new MenuDish structure
+### Phase 6: Update AI Integration ✅ COMPLETED (2025-01-14)
+**Status:** ✅ Completed
 
-**Note**: Ingredients parsing already implemented in Phase 5 (parse_ingredients_from_dish function)
+Updated the AI module to work with new API structures while maintaining the same intelligent meal selection capabilities.
 
-**Changes to ingredient handling**:
+**Completed Actions:**
+- ✅ Removed ingredients cache module entirely (not needed with new API)
+- ✅ Updated AI module imports to use MenuDish instead of old structures
+- ✅ Reimplemented `select_dish` function with new signature:
+  - Takes HashMap<i32, Vec<MenuDish>> for available/current meals
+  - Processes meal history as Vec<MenuDish>
+  - Returns AI recommendations with meal names as keys
+- ✅ Updated AiMenuDietOption to use raw ingredient strings
+- ✅ Implemented relative date formatting ("yesterday", "2 days ago")
+- ✅ Created `fetch_meal_history` function for retrieving past selections
+- ✅ Restored original UI flow:
+  - Shows current selections first
+  - Fetches meal history for context
+  - Calls AI for recommendations
+  - Interactive meal-by-meal selection with AI pre-selected
+- ✅ YOLO mode auto-accepts AI recommendations
+- ✅ Fixed all compilation errors and warnings
 
-```rust
-// Parse ingredients from dish_ing_names field
-fn parse_ingredients(dish: &MenuDish) -> Vec<String> {
-    // dish_ing_names format: "Ingredient1(details...),Ingredient2(...),..."
-    dish.dish_ing_names
-        .split(',')
-        .map(|s| {
-            // Extract ingredient name before parenthesis
-            s.split('(').next().unwrap_or(s).trim().to_string()
-        })
-        .collect()
-}
-
-// Update cache to handle new structure
-impl IngredientsCache {
-    pub fn get_from_dish(&self, dish: &MenuDish) -> Vec<String> {
-        // No more dish_size_id lookup needed
-        parse_ingredients(dish)
-    }
-}
-```
+**Key Changes:**
+- AI receives meal names as identifiers (not meal_seq IDs)
+- Relative dates in history for better AI understanding
+- Raw ingredient strings passed without parsing
+- Maintained original UX with [*] selection markers
 
 **Tasks**:
-- [ ] Update ingredient parsing
-- [ ] Modify cache structure
-- [ ] Remove old ingredient fetching
-- [ ] Test ingredient extraction
+- [x] Update ingredient parsing
+- [x] Modify cache structure (removed entirely)
+- [x] Remove old ingredient fetching
+- [x] Test ingredient extraction
 
 ### Phase 7: Implement Caching Layer (Optional)
 **Goal**: Simple in-memory cache for diet data
@@ -514,7 +514,7 @@ Mark completed items with ✓ and in-progress with ⚡
 - [✓] Phase 3: Create new API client (Completed 2025-01-13)
 - [✓] Phase 4: Implement availability validation (Completed 2025-01-13)
 - [✓] Phase 5: Rewrite main workflow (Completed 2025-01-13)
-- [ ] Phase 6: Update AI integration
+- [✓] Phase 6: Update AI integration (Completed 2025-01-14)
 - [ ] Phase 7: Implement caching (Optional)
 - [ ] Phase 8: Testing & validation
 - [ ] Phase 9: Documentation updates
@@ -525,7 +525,7 @@ Mark completed items with ✓ and in-progress with ⚡
 1. **Milestone 1**: Old code removed, new models ready ✓ Phase 1 & 2 Complete
 2. **Milestone 2**: API client functional with auth ✓ Phase 3 Complete
 3. **Milestone 3**: Basic workflow operational ✓ Phase 5 Complete
-4. **Milestone 4**: Full feature parity achieved
+4. **Milestone 4**: Full feature parity achieved ✓ Phase 6 Complete
 5. **Milestone 5**: Testing complete, ready for use
 
 ## Risk Log

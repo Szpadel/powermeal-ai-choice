@@ -428,8 +428,8 @@ Returns cutoff rules needed for availability calculation:
   "data": {
     "delivery": [
       {
-        "day_id": 1,        // Cutoff day (1=Sunday...7=Saturday)
-        "delv_day_id": 5,   // Delivery day
+        "day_id": 1,        // Delivery day (1=Sunday...7=Saturday)
+        "delv_day_id": 5,   // Cutoff day
         "delv_type_id": 5,  // 5 = Menu selection operation
         "delv_time": "05:00:00"  // Cutoff time
       }

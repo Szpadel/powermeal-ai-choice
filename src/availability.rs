@@ -6,7 +6,7 @@
 
 use chrono::{Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Weekday};
 use chrono_tz::Europe::Warsaw;
-use eyre::{eyre, Result};
+use eyre::{bail, eyre, Result};
 
 use crate::serde::{ClientDietItem, DeliveryConfig};
 
@@ -50,11 +50,14 @@ fn calculate_time_remaining_with_time(
         .ok_or_else(|| eyre!("No menu selection rule found for delivery day {}", delivery_day_id))?;
 
     // Parse the cutoff time
-    let cutoff_time = parse_cutoff_time(&rule.delv_time)?;
+    let cutoff_time = match &rule.delv_time {
+        Some(time) => parse_cutoff_time(time)?,
+        None => bail!("Menu selection rule has no cutoff time specified"),
+    };
 
     // Calculate the actual cutoff date
-    // The cutoff is on day_id (which may be different from delivery day)
-    let cutoff_date = calculate_cutoff_date(delivery_date, delivery_day_id, rule.day_id);
+    // The cutoff is on delv_day_id (which may be different from delivery day)
+    let cutoff_date = calculate_cutoff_date(delivery_date, delivery_day_id, rule.delv_day_id);
 
     // Combine date and time with Warsaw timezone
     let cutoff_datetime = Warsaw
@@ -70,7 +73,7 @@ fn calculate_time_remaining_with_time(
 fn find_menu_selection_rule(config: &DeliveryConfig, delivery_day_id: i32) -> Option<&crate::serde::DeliveryRule> {
     config.data.delivery
         .iter()
-        .find(|r| r.delv_type_id == 5 && r.delv_day_id == delivery_day_id)
+        .find(|r| r.delv_type_id == 5 && r.day_id == delivery_day_id)
 }
 
 /// Convert chrono Weekday to API day_id format
@@ -163,54 +166,54 @@ mod tests {
         DeliveryConfig {
             data: DeliveryData {
                 delivery: vec![
-                    // Sunday cutoff -> Thursday delivery
+                    // Sunday delivery -> Thursday cutoff
                     DeliveryRule {
                         day_id: 1,
                         delv_type_id: 5,
                         delv_day_id: 5,
-                        delv_time: "05:00:00".to_string(),
+                        delv_time: Some("05:00:00".to_string()),
                     },
-                    // Monday cutoff -> Saturday delivery
+                    // Monday delivery -> Saturday cutoff
                     DeliveryRule {
                         day_id: 2,
                         delv_type_id: 5,
                         delv_day_id: 7,
-                        delv_time: "05:00:00".to_string(),
+                        delv_time: Some("05:00:00".to_string()),
                     },
-                    // Tuesday cutoff -> Sunday delivery
+                    // Tuesday delivery -> Sunday cutoff
                     DeliveryRule {
                         day_id: 3,
                         delv_type_id: 5,
                         delv_day_id: 1,
-                        delv_time: "05:00:00".to_string(),
+                        delv_time: Some("05:00:00".to_string()),
                     },
-                    // Wednesday cutoff -> Monday delivery
+                    // Wednesday delivery -> Monday cutoff
                     DeliveryRule {
                         day_id: 4,
                         delv_type_id: 5,
                         delv_day_id: 2,
-                        delv_time: "05:00:00".to_string(),
+                        delv_time: Some("05:00:00".to_string()),
                     },
-                    // Thursday cutoff -> Tuesday delivery
+                    // Thursday delivery -> Tuesday cutoff
                     DeliveryRule {
                         day_id: 5,
                         delv_type_id: 5,
                         delv_day_id: 3,
-                        delv_time: "05:00:00".to_string(),
+                        delv_time: Some("05:00:00".to_string()),
                     },
-                    // Friday cutoff -> Wednesday delivery
+                    // Friday delivery -> Wednesday cutoff
                     DeliveryRule {
                         day_id: 6,
                         delv_type_id: 5,
                         delv_day_id: 4,
-                        delv_time: "05:00:00".to_string(),
+                        delv_time: Some("05:00:00".to_string()),
                     },
-                    // Saturday cutoff -> Thursday delivery
+                    // Saturday delivery -> Thursday cutoff
                     DeliveryRule {
                         day_id: 7,
                         delv_type_id: 5,
                         delv_day_id: 5,
-                        delv_time: "05:00:00".to_string(),
+                        delv_time: Some("05:00:00".to_string()),
                     },
                 ]
             },
@@ -222,12 +225,12 @@ mod tests {
         let delivery_date = NaiveDate::from_ymd_opt(2025, 9, 16).unwrap();
         let config = get_real_delivery_config();
 
-        // Monday delivery (day_id=2) has cutoff on Wednesday (day_id=4) at 05:00
-        // For Sept 16 (Monday), cutoff is Sept 11 (Wednesday) at 05:00
+        // Monday delivery (day_id=2) has cutoff on Saturday (delv_day_id=7) at 05:00
+        // For Sept 16 (Monday), cutoff is Sept 14 (Saturday) at 05:00
 
-        // To have 7-8 hours remaining, we need to be around Sept 10 at 21:00-22:00
+        // To have 3-4 hours remaining, we need to be around Sept 14 at 01:00-02:00
         let mock_time_naive = NaiveDateTime::parse_from_str(
-            "2025-09-10 21:30:00",
+            "2025-09-14 01:30:00",
             "%Y-%m-%d %H:%M:%S"
         ).unwrap();
 
@@ -248,23 +251,23 @@ mod tests {
 
         println!("Time remaining: {} hours {} minutes", hours, minutes);
 
-        // Should be approximately 7.5 hours (7 hours 30 minutes)
-        assert_eq!(hours, 7);
+        // Should be approximately 3.5 hours (3 hours 30 minutes)
+        assert_eq!(hours, 3);
         assert_eq!(minutes, 30);
-        assert!(hours >= 7 && hours <= 8,
-                "Expected 7-8 hours remaining, got {} hours {} minutes",
+        assert!(hours >= 3 && hours <= 4,
+                "Expected 3-4 hours remaining, got {} hours {} minutes",
                 hours, minutes);
     }
 
     #[test]
-    fn test_real_data_menu_selection_not_available() {
-        // Test with actual recording time where menu selection should NOT be available
-        let delivery_date = NaiveDate::from_ymd_opt(2025, 9, 16).unwrap();
+    fn test_real_data_menu_selection_available() {
+        // Test with actual recording time where menu selection should be available
+        let delivery_date = NaiveDate::from_ymd_opt(2025, 9, 16).unwrap(); // Monday
         let config = get_real_delivery_config();
 
         // Mock the actual recording time
         let recording_time_naive = NaiveDateTime::parse_from_str(
-            "2025-09-13 18:38:17",
+            "2025-09-14 01:18:30",  // Saturday morning, before 05:00 cutoff
             "%Y-%m-%d %H:%M:%S"
         ).unwrap();
 
@@ -280,26 +283,34 @@ mod tests {
             recording_time
         ).unwrap();
 
-        // Should be negative (cutoff has passed)
-        assert!(time_remaining < Duration::zero(),
-                "Expected negative time remaining (cutoff passed), got {:?}",
+        // Should be positive (about 3h 41min 30s remaining)
+        assert!(time_remaining > Duration::zero(),
+                "Expected positive time remaining, got {:?}",
                 time_remaining);
+
+        let hours = time_remaining.num_hours();
+        let minutes = (time_remaining.num_minutes() % 60) as i32;
+
+        // Should be approximately 3 hours 41 minutes
+        assert!(hours == 3 && minutes >= 40 && minutes <= 42,
+                "Expected ~3h 41min remaining, got {}h {}min",
+                hours, minutes);
     }
 
     #[test]
     fn test_all_weekday_delivery_rules() {
         let config = get_real_delivery_config();
 
-        // Test that all weekdays except Friday have menu selection rules
-        // Based on actual rules extracted from test.har
+        // Test that all weekdays have menu selection rules
+        // Based on actual rules extracted from debug.har
         let expected_mappings = vec![
-            (1, Some(3)), // Sunday delivery -> Tuesday cutoff
-            (2, Some(4)), // Monday delivery -> Wednesday cutoff
-            (3, Some(5)), // Tuesday delivery -> Thursday cutoff
-            (4, Some(6)), // Wednesday delivery -> Friday cutoff
-            (5, Some(1)), // Thursday delivery -> Sunday cutoff (first match)
-            (6, None),   // Friday delivery -> No rule in config
-            (7, Some(2)), // Saturday delivery -> Monday cutoff
+            (1, Some(5)), // Sunday delivery -> Thursday cutoff
+            (2, Some(7)), // Monday delivery -> Saturday cutoff
+            (3, Some(1)), // Tuesday delivery -> Sunday cutoff
+            (4, Some(2)), // Wednesday delivery -> Monday cutoff
+            (5, Some(3)), // Thursday delivery -> Tuesday cutoff
+            (6, Some(4)), // Friday delivery -> Wednesday cutoff
+            (7, Some(5)), // Saturday delivery -> Thursday cutoff
         ];
 
         for (delivery_day_id, expected_cutoff_day) in expected_mappings {
@@ -308,7 +319,7 @@ mod tests {
             if let Some(expected) = expected_cutoff_day {
                 assert!(rule.is_some(),
                         "Expected rule for delivery day {}", delivery_day_id);
-                assert_eq!(rule.unwrap().day_id, expected,
+                assert_eq!(rule.unwrap().delv_day_id, expected,
                           "Wrong cutoff day for delivery day {}", delivery_day_id);
             } else {
                 assert!(rule.is_none(),
@@ -325,13 +336,13 @@ mod tests {
         // Based on actual rules from test.har
         let test_cases = vec![
             // (delivery_date, expected_cutoff_date)
-            ("2025-09-14", "2025-09-09"), // Sunday (1) -> Tuesday (3) cutoff: 7-(3-1)=5 days before
-            ("2025-09-15", "2025-09-10"), // Monday (2) -> Wednesday (4) cutoff: 7-(4-2)=5 days before
-            ("2025-09-16", "2025-09-11"), // Tuesday (3) -> Thursday (5) cutoff: 7-(5-3)=5 days before
-            ("2025-09-17", "2025-09-12"), // Wednesday (4) -> Friday (6) cutoff: 7-(6-4)=5 days before
-            ("2025-09-18", "2025-09-14"), // Thursday (5) -> Sunday (1) cutoff: 5-1=4 days before (same week)
-            // Friday (6) has no rule
-            ("2025-09-20", "2025-09-15"), // Saturday (7) -> Monday (2) cutoff: 7-2=5 days before
+            ("2025-09-14", "2025-09-11"), // Sunday (1) -> Thursday (5) cutoff: 7-(5-1)=3 days before
+            ("2025-09-15", "2025-09-13"), // Monday (2) -> Saturday (7) cutoff: 7-(7-2)=2 days before
+            ("2025-09-16", "2025-09-14"), // Tuesday (3) -> Sunday (1) cutoff: 3-1=2 days before
+            ("2025-09-17", "2025-09-15"), // Wednesday (4) -> Monday (2) cutoff: 4-2=2 days before
+            ("2025-09-18", "2025-09-16"), // Thursday (5) -> Tuesday (3) cutoff: 5-3=2 days before
+            ("2025-09-19", "2025-09-17"), // Friday (6) -> Wednesday (4) cutoff: 6-4=2 days before
+            ("2025-09-20", "2025-09-18"), // Saturday (7) -> Thursday (5) cutoff: 7-5=2 days before
         ];
 
         for (delivery_str, expected_cutoff_str) in test_cases {
@@ -344,7 +355,7 @@ mod tests {
                 let calculated_cutoff = calculate_cutoff_date(
                     &delivery_date,
                     delivery_day_id,
-                    rule.day_id
+                    rule.delv_day_id
                 );
 
                 assert_eq!(calculated_cutoff, expected_cutoff,

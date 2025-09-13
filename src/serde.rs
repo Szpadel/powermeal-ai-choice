@@ -3,7 +3,64 @@
 //! This module contains data structures for the new PowerFoods API.
 //! Phase 2 implementation: New API data models.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Helper function to deserialize both string and integer values to i32
+fn deserialize_string_or_int<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+    use std::fmt;
+
+    struct StringOrIntVisitor;
+
+    impl<'de> Visitor<'de> for StringOrIntVisitor {
+        type Value = i32;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or an integer")
+        }
+
+        fn visit_i32<E>(self, value: i32) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value as i32)
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value as i32)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            value.parse::<i32>()
+                .map_err(|e| de::Error::custom(format!("Failed to parse '{}' as i32: {}", value, e)))
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            self.visit_str(&value)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrIntVisitor)
+}
 
 // ============================================================================
 // Client Diet List Structures
@@ -34,7 +91,6 @@ pub struct ClientDiet {
     pub created_at: String,
     pub updated_at: String,
     pub var_cal_id: i64,                // calorie variant ID
-    pub quantity: i32,
     pub is_active: i32,
     pub diet_name: String,
     pub var_cal_name: String,
@@ -45,7 +101,6 @@ pub struct ClientDiet {
     pub flat: Option<String>,
     pub city_name: Option<String>,
     pub postcode: Option<String>,
-    pub diet_price: Option<f64>,
     pub total_days: Option<i32>,
     pub has_menu_choice: i32,
     pub order_id: Option<i64>,
@@ -68,9 +123,9 @@ pub struct ClientDietDetails {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DietDetailsData {
     pub items: Vec<ClientDietItem>,
-    #[serde(rename = "totalDays")]
+    #[serde(rename = "totalDays", deserialize_with = "deserialize_string_or_int")]
     pub total_days: i32,
-    #[serde(rename = "pastDays")]
+    #[serde(rename = "pastDays", deserialize_with = "deserialize_string_or_int")]
     pub past_days: i32,
 }
 
@@ -82,17 +137,7 @@ pub struct ClientDietItem {
     pub diet_id: i64,
     pub var_id: i64,
     pub var_cal_id: i64,
-    pub has_menu_choice: i32,           // unreliable, requires validation
-    pub dishes: Vec<DishInfo>,
-}
-
-/// Basic dish information within a diet item
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct DishInfo {
-    pub dish_id: i64,
-    pub dish_name: String,
-    pub var_cal_meal_id: i64,
-    // Additional fields can be added as needed
+    // We don't use has_menu_choice or dishes, so we skip them
 }
 
 // ============================================================================
@@ -105,52 +150,21 @@ pub struct MenuResponse {
     pub data: Vec<MenuDish>,
 }
 
-/// Detailed dish information with nutritional data
+/// Menu dish information - only fields we actually use
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct MenuDish {
-    pub brand_id: i32,
-    pub dmenu: String,                  // date
-    pub diet_id: i64,
-    pub diet_name: String,
-    pub var_id: i64,
-    pub var_name: String,
-    pub var_cal_id: i64,
-    pub var_cal_name: String,
-    pub var_cal_meal_id: i64,           // unique meal variant identifier
+    // Critical fields for core functionality
+    pub dish_id: i64,                   // Primary identifier
+    pub dish_name: String,              // Display name
+    pub meal_name: String,              // Meal type name
+    pub meal_seq: i32,                  // Meal ordering (1=breakfast, etc.)
 
-    // Dish information
-    pub dish_id: i64,
-    pub dish_name: String,
-    pub dish_photo: Option<String>,
-    pub dish_photo_client: Option<String>,
-    pub dish_suggest: Option<String>,
-    pub dish_tags: Option<String>,
+    // Critical for API updates (only present in type=all responses)
+    pub var_cal_meal_id: Option<i64>,   // Required for dish updates
 
-    // Meal information
-    pub meal_id: i64,
-    pub meal_name: String,
-    pub meal_seq: i32,                  // sequence (1=breakfast, etc.)
-
-    // Nutritional information
-    pub r#macro: Option<String>,        // formatted macro string
-    pub protein: String,
-    pub fat: String,
-    pub fat_saturated: Option<String>,
-    pub carbohydrate: String,
-    pub sugar: Option<String>,
-    pub salt: Option<String>,
-    pub fiber: Option<String>,
-    pub calory: String,
-    pub weight: Option<String>,
-
-    // Ingredients and allergens
-    pub dish_ing_names: String,         // ingredients text
-    pub dish_allergens: Option<String>,
-
-    // Rating
-    pub rating: Option<f64>,
-    pub rating_descr: Option<String>,
-    pub rating_id: Option<i64>,
+    // Important for AI context
+    pub dish_ing_names: Option<String>, // Ingredients for AI analysis
+    pub dmenu: String,                  // Date for history context
 }
 
 // ============================================================================
@@ -189,7 +203,7 @@ pub struct DeliveryRule {
     pub day_id: i32,                    // cutoff day (1=Sunday...7=Saturday)
     pub delv_day_id: i32,               // delivery day
     pub delv_type_id: i32,              // 5 = menu selection
-    pub delv_time: String,               // cutoff time
+    pub delv_time: Option<String>,      // cutoff time (can be null for some types)
 }
 
 // ============================================================================

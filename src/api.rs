@@ -84,10 +84,14 @@ pub async fn fetch_diet_details(token: &str, client_diet_id: i64) -> eyre::Resul
     let response = send_request_with_retry(&url, token, reqwest::Method::GET, None).await
         .wrap_err_with(|| format!("Failed to fetch diet details for client_diet_id: {}", client_diet_id))?;
 
-    let details: ClientDietDetails = serde_json::from_str(&response)
-        .wrap_err("Failed to parse diet details response")?;
-
-    Ok(details)
+    match serde_json::from_str::<ClientDietDetails>(&response) {
+        Ok(details) => Ok(details),
+        Err(e) => {
+            eprintln!("DEBUG: Parse error: {}", e);
+            eprintln!("DEBUG: Raw response (first 500 chars): {}", &response[..response.len().min(500)]);
+            Err(e).wrap_err("Failed to parse diet details response")
+        }
+    }
 }
 
 /// Fetch menu (all available or current selections)
@@ -109,10 +113,14 @@ pub async fn fetch_menu(
     let response = send_request_with_retry(&url, token, reqwest::Method::GET, None).await
         .wrap_err_with(|| format!("Failed to fetch menu for date: {}", date))?;
 
-    let menu: MenuResponse = serde_json::from_str(&response)
-        .wrap_err("Failed to parse menu response")?;
-
-    Ok(menu)
+    match serde_json::from_str::<MenuResponse>(&response) {
+        Ok(menu) => Ok(menu),
+        Err(e) => {
+            eprintln!("DEBUG: Menu parse error: {}", e);
+            eprintln!("DEBUG: Menu response (first 500 chars): {}", &response[..response.len().min(500)]);
+            Err(e).wrap_err("Failed to parse menu response")
+        }
+    }
 }
 
 /// Update single dish selection
@@ -136,10 +144,13 @@ pub async fn fetch_delivery_config(token: &str, brand_id: i32) -> eyre::Result<D
     let response = send_request_with_retry(&url, token, reqwest::Method::GET, None).await
         .wrap_err("Failed to fetch delivery configuration")?;
 
-    let config: DeliveryConfig = serde_json::from_str(&response)
-        .wrap_err("Failed to parse delivery configuration response")?;
-
-    Ok(config)
+    match serde_json::from_str::<DeliveryConfig>(&response) {
+        Ok(config) => Ok(config),
+        Err(e) => {
+            eprintln!("DEBUG: Failed to parse delivery config. Raw response: {}", response);
+            Err(e).wrap_err("Failed to parse delivery configuration response")
+        }
+    }
 }
 
 /// Core request function with enhanced retry logic for 500 errors

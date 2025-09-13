@@ -43,7 +43,7 @@ use std::{
 use crate::{
     preferences::{AiConfig, Preferences},
     prompts,
-    serde::{CalendarDayItems, DishItem}, // TODO: Phase 2 - update with new structures
+    serde::MenuDish,
 };
 
 /// Internal representation of a candidate dish for AI selection.
@@ -53,7 +53,7 @@ use crate::{
 struct CandidateDish {
     _dish_id: String,
     name: String,
-    ingredients: Vec<String>,
+    ingredients: String,
 }
 
 /// Mapping from dish item ID to list of candidate dishes.
@@ -172,12 +172,12 @@ pub struct AiDishItem {
 /// # Fields
 ///
 /// * `name` - Human-readable dish name
-/// * `ingredients` - List of ingredients for dietary analysis
+/// * `ingredients` - Raw ingredients string as provided by API
 /// * `id` - Unique identifier for this dish
 #[derive(Debug, Serialize)]
 pub struct AiMenuDietOption {
     pub name: String,
-    pub ingredients: Vec<String>,
+    pub ingredients: String,
     pub id: String,
 }
 
@@ -188,7 +188,7 @@ pub struct AiMenuDietOption {
 ///
 /// # Fields
 ///
-/// * `dish_id` - ID of the selected dish
+/// * `dish_id` - ID of the selected dish (as string for JSON compatibility)
 /// * `reason` - Concise justification for this selection
 /// * `analysis` - Detailed analysis of each available option (dish_id -> analysis text)
 ///
@@ -196,11 +196,11 @@ pub struct AiMenuDietOption {
 ///
 /// ```json
 /// {
-///   "dish_id": "salad_123",
+///   "dish_id": "123456",
 ///   "reason": "Light, nutritious option with varied vegetables",
 ///   "analysis": {
-///     "salad_123": "Excellent choice with fresh vegetables and protein",
-///     "pasta_456": "Too heavy after yesterday's carb-rich meal"
+///     "123456": "Excellent choice with fresh vegetables and protein",
+///     "789012": "Too heavy after yesterday's carb-rich meal"
 ///   }
 /// }
 /// ```
@@ -350,6 +350,250 @@ fn get_openai_client(config: &AiConfig) -> Client<OpenAIConfig> {
         .with_api_key(&config.api_key);
 
     Client::with_config(openai_config)
+}
+
+/// Core AI meal selection with preferences and history analysis.
+///
+/// Performs intelligent meal selection by analyzing user preferences, recent meal history,
+/// and available options. Uses structured JSON schemas to ensure the AI provides detailed
+/// analysis and reasoning for each selection.
+///
+/// # Arguments
+///
+/// * `date` - The date for which meals are being selected
+/// * `available_by_meal` - Available dishes grouped by meal_seq
+/// * `current_by_meal` - Current selections grouped by meal_seq (currently unused but kept for future use)
+/// * `meal_history` - Recent meal selections for variety and pattern analysis
+/// * `user_preferences` - Natural language description of dietary preferences
+///
+/// # Returns
+///
+/// Returns `AiResponse` containing:
+/// - Reasoning steps explaining the selection logic
+/// - Selected dish for each meal slot with detailed justification
+/// - Comparative analysis of all available options
+pub async fn select_dish(
+    date: NaiveDate,
+    available_by_meal: &HashMap<i32, Vec<MenuDish>>,
+    _current_by_meal: &HashMap<i32, Vec<MenuDish>>,
+    meal_history: &[MenuDish],
+    user_preferences: &str,
+) -> eyre::Result<AiResponse> {
+    // Get or configure AI settings
+    let ai_config = match Preferences::ai_config() {
+        Some(config) => config,
+        None => configure_ai().await?,
+    };
+
+    let client = get_openai_client(&ai_config);
+
+    if available_by_meal.is_empty() {
+        return Err(eyre::eyre!("No meals available for selection"));
+    }
+
+    // Build mappings for logging
+    let mut meal_name_by_seq = HashMap::new();
+    let mut dish_name_by_id = HashMap::new();
+    let mut dish_candidates_by_meal = HashMap::new();
+
+    // Build schema properties for each meal
+    let mut properties = serde_json::Map::new();
+    let mut required_meals = Vec::new();
+
+    for (meal_seq, dishes) in available_by_meal {
+        if dishes.is_empty() {
+            continue;
+        }
+
+        // Get meal name from first dish (all dishes in group have same meal)
+        let meal_name = &dishes[0].meal_name;
+        meal_name_by_seq.insert(*meal_seq, meal_name.clone());
+
+        // Build candidates for logging
+        let mut candidates = Vec::new();
+        for dish in dishes {
+            dish_name_by_id.insert(dish.dish_id.to_string(), dish.dish_name.clone());
+
+            candidates.push(CandidateDish {
+                _dish_id: dish.dish_id.to_string(),
+                name: dish.dish_name.clone(),
+                ingredients: dish.dish_ing_names.clone().unwrap_or_default(),
+            });
+        }
+        dish_candidates_by_meal.insert(meal_name.clone(), candidates);
+
+        // Build schema for this meal
+        let meal_schema = json!({
+            "type": "object",
+            "properties": {
+                "analysis": {
+                    "type": "object",
+                    "description": "Analyze available options and argue how good each is for the user",
+                    "properties": dishes.iter().map(|dish| (
+                        dish.dish_id.to_string(),
+                        json!({ "type": "string" })
+                    )).collect::<serde_json::Map<_,_>>(),
+                    "required": dishes.iter().map(|d| d.dish_id.to_string()).collect::<Vec<String>>(),
+                    "additionalProperties": false
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Justification why this meal fits user preferences"
+                },
+                "dish_id": {
+                    "type": "string",
+                    "enum": dishes.iter().map(|d| d.dish_id.to_string()).collect::<Vec<String>>()
+                },
+            },
+            "required": ["analysis", "reason", "dish_id"],
+            "additionalProperties": false
+        });
+
+        properties.insert(meal_name.clone(), meal_schema);
+        required_meals.push(meal_name.clone());
+    }
+
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "reasoning": {
+                "type": "array",
+                "description": "Think about what the user might like and why",
+                "items": {
+                    "type": "string",
+                }
+            },
+            "selections": {
+                "type": "object",
+                "properties": properties,
+                "required": required_meals,
+                "additionalProperties": false
+            }
+        },
+        "required": ["reasoning", "selections"],
+        "additionalProperties": false
+    });
+
+    tracing::debug!("Schema: {}", serde_json::to_string_pretty(&schema)?);
+
+    let response_format = ResponseFormat::JsonSchema {
+        json_schema: ResponseFormatJsonSchema {
+            description: None,
+            name: "meal_selection".into(),
+            schema: Some(schema),
+            strict: Some(true),
+        },
+    };
+
+    // Build meal history for AI context with relative dates
+    let mut history_by_date: IndexMap<String, Vec<AiMenuDietOption>> = IndexMap::new();
+    for dish in meal_history {
+        // Parse the dish date and calculate days ago
+        // TODO: move data parsing to api.rs, so we do not need to have scatered parsing logic
+        let dish_date = NaiveDate::parse_from_str(&dish.dmenu, "%Y-%m-%d")
+            .wrap_err(format!("Invalid date format in meal history: {}", dish.dmenu))?;
+
+        let days_ago = (date - dish_date).num_days();
+        let date_label = match days_ago {
+            0 => "today".to_string(), // This should never happen
+            1 => "yesterday".to_string(),
+            n if n > 0 => format!("{} days ago", n),
+            _ => continue, // Skip future dates if any
+        };
+
+        let ai_option = AiMenuDietOption {
+            name: dish.dish_name.clone(),
+            ingredients: dish.dish_ing_names.clone().unwrap_or_default(),
+            id: dish.dish_id.to_string(),
+        };
+
+        history_by_date.entry(date_label).or_default().push(ai_option);
+    }
+
+    // Build dish items for AI
+    let mut dish_items = Vec::new();
+    for dishes in available_by_meal.values() {
+        if dishes.is_empty() {
+            continue;
+        }
+
+        let meal_name = &dishes[0].meal_name;
+        let options: Vec<AiMenuDietOption> = dishes.iter().map(|dish| {
+            AiMenuDietOption {
+                name: dish.dish_name.clone(),
+                ingredients: dish.dish_ing_names.clone().unwrap_or_default(),
+                id: dish.dish_id.to_string(),
+            }
+        }).collect();
+
+        dish_items.push(AiDishItem {
+            id: meal_name.clone(),
+            meal_type: meal_name.clone(),
+            options,
+        });
+    }
+
+    let question = SelectDishQuestion {
+        user_preferences: user_preferences.to_string(),
+        last_days_choices: history_by_date,
+        dish_items,
+        menu_date: date,
+    };
+
+    let system_prompt = prompts::build_meal_selection_system_prompt(
+        user_preferences,
+        !meal_history.is_empty(),
+    );
+
+    let request = CreateChatCompletionRequestArgs::default()
+        .max_tokens(1024u32 * 40)
+        .model(&ai_config.model)
+        .messages([
+            ChatCompletionRequestSystemMessage::from(system_prompt).into(),
+            ChatCompletionRequestUserMessage::from(serde_json::to_string(&question).unwrap()).into(),
+        ])
+        .response_format(response_format)
+        .build()?;
+
+    // Retry logic for handling empty responses
+    let mut retries = 0;
+    const MAX_RETRIES: u32 = 5;
+
+    loop {
+        let response = client.chat().create(request.clone()).await?;
+
+        if let Some(choice) = response.choices.first() {
+            if let Some(content) = &choice.message.content {
+                if content.trim().is_empty() {
+                    retries += 1;
+                    if retries <= MAX_RETRIES {
+                        tracing::warn!("Received empty response from AI, retrying... ({}/{})", retries, MAX_RETRIES);
+                        continue;
+                    }
+                    eyre::bail!("Received empty response from AI after {} retries", MAX_RETRIES);
+                }
+
+                let response: AiResponse = serde_json::from_str(content)
+                    .wrap_err(format!("Failed to parse AI response: {content}"))?;
+
+                // Log human readable AI response; ignore logging errors
+                if let Err(e) = log_ai_response(
+                    date,
+                    &response,
+                    &meal_name_by_seq.values().map(|v| (v.clone(), v.clone()))
+                        .collect(),
+                    &dish_name_by_id,
+                    &dish_candidates_by_meal,
+                ) {
+                    tracing::warn!(error = ?e, "Failed to write AI response log");
+                }
+
+                return Ok(response);
+            }
+            eyre::bail!("No content in response from AI");
+        }
+        eyre::bail!("No response from AI");
+    }
 }
 
 // TODO: Phase 5 - Reimplement with new API structures
@@ -657,7 +901,7 @@ fn log_ai_response(
                 for cand in cands {
                     writeln!(f, "    - {}", cand.name)?;
                     if !cand.ingredients.is_empty() {
-                        writeln!(f, "      Ingredients: {}", cand.ingredients.join(", "))?;
+                        writeln!(f, "      Ingredients: {}", cand.ingredients)?;
                     }
                 }
             }
