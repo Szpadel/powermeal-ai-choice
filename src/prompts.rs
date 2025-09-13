@@ -1,7 +1,23 @@
 //! Centralized long system prompts and prompt builders for AI interactions.
 //! Keeping them here allows easier iteration without cluttering business logic.
 
-/// Base system prompt for meal selection. Dynamic notes are appended at runtime.
+/// Base system prompt for AI-assisted meal selection.
+///
+/// This prompt defines the core behavior for the AI meal selection assistant.
+/// It establishes the workflow, constraints, and output format for selecting
+/// optimal meals based on user preferences and variety considerations.
+///
+/// # Workflow
+///
+/// 1. Parse user preferences into categories (exclusions, preferences, goals)
+/// 2. Evaluate each dish option against preferences and recent history
+/// 3. Select optimal dishes balancing preferences and variety
+/// 4. Generate analysis and reasoning for selections
+///
+/// # Dynamic Extensions
+///
+/// Additional notes are appended at runtime via `build_meal_selection_system_prompt()`
+/// based on context (e.g., missing preferences or history).
 pub const MEAL_SELECTION_BASE_PROMPT: &str = r#"You are an expert personal meal selection assistant.
 
 OBJECTIVE:
@@ -39,7 +55,23 @@ FAIL-SAFES:
 - If uncertain about an ingredient presence, remain neutral.
 "#;
 
-/// System prompt for summarising historical structured adjustments into a free-text preference description.
+/// System prompt for migrating legacy structured preferences to free-form text.
+///
+/// This prompt is used during the migration process from the old adjustment-based
+/// preference system to the new free-form text format. It analyzes historical
+/// user adjustments and synthesizes them into natural language preferences.
+///
+/// # Output Format
+///
+/// The prompt generates first-person preference descriptions that are:
+/// - Concise (4-8 sentences)
+/// - Grouped by category (allergies, dislikes, preferences, goals)
+/// - Free of formatting symbols or JSON
+///
+/// # Usage
+///
+/// Used in the preference migration workflow when `Preferences::needs_migration()`
+/// returns true.
 pub const PREFERENCE_SUMMARY_SYSTEM_PROMPT: &str = r#"You are a dietary preference analyzer. Synthesize the provided list of user adjustments into a
 coherent, natural language description of dietary preferences.
 
@@ -55,7 +87,38 @@ Guidelines:
 Output ONLY the preference description.
 "#;
 
-/// Build the meal selection system prompt with dynamic annotations.
+/// Builds the complete meal selection system prompt with contextual annotations.
+///
+/// Extends the base prompt with dynamic notes based on the current context,
+/// such as whether user preferences are available or if historical meal
+/// data exists for variety calculations.
+///
+/// # Arguments
+///
+/// * `user_prefs` - The user's dietary preferences text
+/// * `has_history` - Whether historical meal selection data is available
+///
+/// # Returns
+///
+/// The complete system prompt with all relevant contextual notes appended.
+///
+/// # Behavior
+///
+/// - Adds a note about relying on variety if preferences are empty
+/// - Adds a note to skip repetition penalties if no history exists
+///
+/// # Examples
+///
+/// ```no_run
+/// let prompt = build_meal_selection_system_prompt(
+///     "I avoid gluten and prefer vegetarian options",
+///     true
+/// );
+/// // Returns base prompt without additional notes
+///
+/// let prompt = build_meal_selection_system_prompt("", false);
+/// // Returns base prompt with notes about empty preferences and no history
+/// ```
 pub fn build_meal_selection_system_prompt(user_prefs: &str, has_history: bool) -> String {
     let mut prompt = String::from(MEAL_SELECTION_BASE_PROMPT);
 

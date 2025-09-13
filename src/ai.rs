@@ -1,3 +1,24 @@
+//! AI integration module for intelligent meal selection using OpenAI/LiteLLM.
+//!
+//! This module provides the core AI functionality for PowerMeal, enabling intelligent
+//! meal selection based on user preferences, dietary requirements, and meal history.
+//! It integrates with OpenAI-compatible APIs (including LiteLLM servers) to provide
+//! personalized meal recommendations.
+//!
+//! # Features
+//!
+//! - Interactive AI service configuration with model discovery
+//! - Intelligent meal selection using structured JSON schemas
+//! - Preference migration from legacy adjustment records
+//! - Comprehensive logging of AI decisions for transparency
+//! - Retry logic for handling API failures
+//!
+//! # Architecture
+//!
+//! The module uses OpenAI's chat completion API with structured output formats
+//! to ensure consistent and parseable responses. It generates complex JSON schemas
+//! that guide the AI to analyze each meal option and provide reasoned selections.
+
 use async_openai::{
     config::OpenAIConfig,
     types::{
@@ -24,7 +45,9 @@ use crate::{
     prompts, CalendarDayItems, DishItem,
 };
 
-// Candidate dish with explicit named fields (replaces previous tuple alias)
+/// Internal representation of a candidate dish for AI selection.
+///
+/// Used internally to track available meal options during the selection process.
 #[derive(Debug, Clone)]
 struct CandidateDish {
     _dish_id: String,
@@ -32,9 +55,36 @@ struct CandidateDish {
     ingredients: Vec<String>,
 }
 
-// Mapping: dish_item_id -> list of candidate dishes
+/// Mapping from dish item ID to list of candidate dishes.
+///
+/// Used internally to organize available options for each meal slot.
 type DishItemCandidates = HashMap<String, Vec<CandidateDish>>;
 
+/// Structured request format for AI meal selection.
+///
+/// This structure is serialized to JSON and sent to the AI model as part of the
+/// user message. It provides complete context for meal selection including user
+/// preferences, recent meal history, and available options.
+///
+/// # Fields
+///
+/// * `user_preferences` - Natural language description of dietary preferences and requirements
+/// * `last_days_choices` - Recent meal selections indexed by date for variety considerations
+/// * `dish_items` - Available meal slots with their respective options
+/// * `menu_date` - The date for which meals are being selected
+///
+/// # Example
+///
+/// ```json
+/// {
+///   "user_preferences": "I prefer vegetarian meals with lots of protein",
+///   "last_days_choices": {
+///     "2025-01-11": [{"name": "Grilled Tofu", "ingredients": [...]}]
+///   },
+///   "dish_items": [{"id": "lunch", "meal_type": "Lunch", "options": [...]}],
+///   "menu_date": "2025-01-12"
+/// }
+/// ```
 #[derive(Debug, Serialize)]
 pub struct SelectDishQuestion {
     pub user_preferences: String,
@@ -43,6 +93,17 @@ pub struct SelectDishQuestion {
     pub menu_date: NaiveDate,
 }
 
+/// Legacy user adjustment record for meal changes.
+///
+/// Represents historical meal adjustments made by users, used during migration
+/// to generate natural language preferences from past behavior.
+///
+/// # Fields
+///
+/// * `from` - Original meal that was replaced
+/// * `to` - New meal that was selected
+/// * `reason` - Optional explanation for the change
+/// * `date` - Date when the adjustment was made
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UserAdjustment {
     pub from: String,
@@ -51,12 +112,50 @@ pub struct UserAdjustment {
     pub date: NaiveDate,
 }
 
+/// AI response containing meal selections with reasoning.
+///
+/// This structure represents the complete response from the AI model after
+/// analyzing meal options. It includes both the reasoning process and the
+/// final selections for each meal slot.
+///
+/// # Fields
+///
+/// * `reasoning` - Step-by-step thought process explaining the selection logic
+/// * `selections` - Map from dish item ID to selected meal with detailed analysis
+///
+/// # Example
+///
+/// ```json
+/// {
+///   "reasoning": [
+///     "User prefers vegetarian options",
+///     "Need to ensure variety from yesterday's meals"
+///   ],
+///   "selections": {
+///     "lunch_slot": {
+///       "dish_id": "tofu_bowl_123",
+///       "reason": "High protein vegetarian option",
+///       "analysis": {...}
+///     }
+///   }
+/// }
+/// ```
 #[derive(Debug, Deserialize)]
 pub struct AiResponse {
     pub reasoning: Vec<String>,
     pub selections: HashMap<String, ResponseItem>,
 }
 
+/// Meal slot with available options for AI selection.
+///
+/// Represents a single meal slot (e.g., lunch, dinner) with all available
+/// dish options that the AI can choose from.
+///
+/// # Fields
+///
+/// * `id` - Unique identifier for this meal slot
+/// * `meal_type` - Human-readable meal type (e.g., "Lunch", "Dinner")
+/// * `options` - List of available dishes for this slot
 #[derive(Debug, Serialize)]
 pub struct AiDishItem {
     pub id: String,
@@ -64,6 +163,16 @@ pub struct AiDishItem {
     pub options: Vec<AiMenuDietOption>,
 }
 
+/// Individual meal option with ingredients for AI analysis.
+///
+/// Represents a single dish option that can be selected for a meal slot,
+/// including its ingredients for dietary analysis.
+///
+/// # Fields
+///
+/// * `name` - Human-readable dish name
+/// * `ingredients` - List of ingredients for dietary analysis
+/// * `id` - Unique identifier for this dish
 #[derive(Debug, Serialize)]
 pub struct AiMenuDietOption {
     pub name: String,
@@ -71,6 +180,29 @@ pub struct AiMenuDietOption {
     pub id: String,
 }
 
+/// Individual meal selection with detailed analysis.
+///
+/// Contains the AI's selection for a single meal slot, including the chosen
+/// dish and detailed reasoning about why it was selected over alternatives.
+///
+/// # Fields
+///
+/// * `dish_id` - ID of the selected dish
+/// * `reason` - Concise justification for this selection
+/// * `analysis` - Detailed analysis of each available option (dish_id -> analysis text)
+///
+/// # Example
+///
+/// ```json
+/// {
+///   "dish_id": "salad_123",
+///   "reason": "Light, nutritious option with varied vegetables",
+///   "analysis": {
+///     "salad_123": "Excellent choice with fresh vegetables and protein",
+///     "pasta_456": "Too heavy after yesterday's carb-rich meal"
+///   }
+/// }
+/// ```
 #[derive(Debug, Deserialize)]
 pub struct ResponseItem {
     pub dish_id: String,
@@ -78,6 +210,15 @@ pub struct ResponseItem {
     pub analysis: HashMap<String, String>,
 }
 
+/// Fetches available models from the AI service.
+///
+/// # Arguments
+///
+/// * `client` - OpenAI client configured with API credentials
+///
+/// # Returns
+///
+/// Returns a vector of available model IDs, or error if the API call fails.
 async fn fetch_models(client: &Client<OpenAIConfig>) -> Result<Vec<String>> {
     match client.models().list().await {
         Ok(models) => {
@@ -94,7 +235,15 @@ async fn fetch_models(client: &Client<OpenAIConfig>) -> Result<Vec<String>> {
     }
 }
 
-// Helper function to prompt user for model selection or input
+/// Prompts user for model selection or manual input.
+///
+/// # Arguments
+///
+/// * `models` - List of available models (empty triggers manual input)
+///
+/// # Returns
+///
+/// Returns the selected or manually entered model name.
 fn get_model_input(models: Vec<String>) -> Result<String> {
     if models.is_empty() {
         Input::<String>::new()
@@ -112,7 +261,37 @@ fn get_model_input(models: Vec<String>) -> Result<String> {
     }
 }
 
-// Main configuration function now async
+/// Interactive AI service configuration with model discovery.
+///
+/// Guides the user through setting up AI service connection, including API endpoint,
+/// authentication, and model selection. Attempts to fetch available models from the
+/// service for easy selection, falling back to manual entry if the list cannot be retrieved.
+///
+/// # Returns
+///
+/// Returns `AiConfig` containing the configured API connection details and selected model.
+///
+/// # Errors
+///
+/// * Returns error if user input fails (e.g., terminal not available)
+/// * Returns error if configuration cannot be saved
+///
+/// # Example
+///
+/// ```rust
+/// // Interactive configuration flow:
+/// // 1. User enters API base URL (defaults to OpenAI)
+/// // 2. User enters API key
+/// // 3. System fetches available models
+/// // 4. User selects model from list or enters manually
+/// let config = configure_ai().await?;
+/// println!("Using model: {}", config.model);
+/// ```
+///
+/// # Notes
+///
+/// The configuration is automatically saved to user preferences for future use.
+/// Supports both OpenAI API and LiteLLM-compatible endpoints.
 pub async fn configure_ai() -> Result<AiConfig> {
     println!("AI Configuration Setup");
 
@@ -155,6 +334,15 @@ pub async fn configure_ai() -> Result<AiConfig> {
     Ok(config)
 }
 
+/// Creates an OpenAI client from configuration.
+///
+/// # Arguments
+///
+/// * `config` - AI configuration with API credentials and endpoint
+///
+/// # Returns
+///
+/// Returns configured OpenAI client ready for API calls.
 fn get_openai_client(config: &AiConfig) -> Client<OpenAIConfig> {
     let openai_config = OpenAIConfig::new()
         .with_api_base(&config.api_base)
@@ -163,6 +351,55 @@ fn get_openai_client(config: &AiConfig) -> Client<OpenAIConfig> {
     Client::with_config(openai_config)
 }
 
+/// Core AI meal selection with preferences and history analysis.
+///
+/// Performs intelligent meal selection by analyzing user preferences, recent meal history,
+/// and available options. Uses structured JSON schemas to ensure the AI provides detailed
+/// analysis and reasoning for each selection.
+///
+/// # Arguments
+///
+/// * `date` - The date for which meals are being selected
+/// * `dish_items` - Available meal slots with their respective dish options
+/// * `last_days_choices` - Recent meal selections for variety and pattern analysis
+/// * `user_preferences` - Natural language description of dietary preferences
+///
+/// # Returns
+///
+/// Returns `AiResponse` containing:
+/// - Reasoning steps explaining the selection logic
+/// - Selected dish for each meal slot with detailed justification
+/// - Comparative analysis of all available options
+///
+/// # Errors
+///
+/// * Returns error if no dish items are provided
+/// * Returns error if AI configuration is missing and cannot be created
+/// * Returns error if API call fails after retries
+/// * Returns error if response parsing fails
+///
+/// # Example
+///
+/// ```rust
+/// let response = select_dish(
+///     NaiveDate::from_ymd(2025, 1, 12),
+///     &dish_items,
+///     &last_7_days,
+///     "I prefer vegetarian meals with high protein"
+/// ).await?;
+///
+/// for (slot_id, selection) in &response.selections {
+///     println!("{}: Selected {} because {}", 
+///              slot_id, selection.dish_id, selection.reason);
+/// }
+/// ```
+///
+/// # Implementation Details
+///
+/// 1. Builds complex JSON schema defining expected response structure
+/// 2. Includes retry logic (up to 5 attempts) for handling empty responses
+/// 3. Logs human-readable summaries of AI decisions to state directory
+/// 4. Uses structured output format to ensure consistent responses
 pub async fn select_dish(
     date: NaiveDate,
     dish_items: &Vec<DishItem>,
@@ -335,6 +572,11 @@ pub async fn select_dish(
     }
 }
 
+/// Determines the path for AI response logging.
+///
+/// # Returns
+///
+/// Returns the log file path following XDG standards, or None if home directory cannot be determined.
 fn ai_log_path() -> Option<PathBuf> {
     // Determine a sensible per-user log location.
     // Prefer XDG_STATE_HOME, fallback to ~/.local/state
@@ -344,6 +586,28 @@ fn ai_log_path() -> Option<PathBuf> {
     Some(base.join("powermeal-ai-choice").join("ai_responses.log"))
 }
 
+/// Logs AI meal selection response in human-readable format.
+///
+/// Creates a detailed log of AI decisions including reasoning, selections,
+/// and analysis of all available options. Logs are appended to a persistent
+/// file for transparency and debugging.
+///
+/// # Arguments
+///
+/// * `date` - Date for which meals were selected
+/// * `response` - AI response with selections and reasoning
+/// * `dish_item_name` - Mapping of dish item IDs to human-readable names
+/// * `dish_name` - Mapping of dish IDs to human-readable names
+/// * `dish_item_candidates` - All available options for each meal slot
+///
+/// # Returns
+///
+/// Returns Ok(()) on success, or error if file operations fail.
+///
+/// # Notes
+///
+/// Logs are stored in `~/.local/state/powermeal-ai-choice/ai_responses.log`
+/// following XDG base directory standards.
 fn log_ai_response(
     date: NaiveDate,
     response: &AiResponse,
@@ -407,6 +671,49 @@ fn log_ai_response(
     Ok(())
 }
 
+/// Converts legacy meal adjustments to natural language preferences.
+///
+/// Analyzes historical meal adjustment records to generate a natural language
+/// description of user preferences. Used during migration from the old adjustment-based
+/// system to the new preference-based system.
+///
+/// # Arguments
+///
+/// * `adjustments` - Historical meal adjustments showing user's past choices
+/// * `cfg` - AI configuration for API connection
+///
+/// # Returns
+///
+/// Returns a natural language string describing inferred dietary preferences
+/// based on the pattern of historical adjustments.
+///
+/// # Errors
+///
+/// * Returns error if API call fails after retries
+/// * Returns error if response is empty
+/// * Returns error if JSON serialization fails
+///
+/// # Example
+///
+/// ```rust
+/// let adjustments = vec![
+///     UserAdjustment {
+///         from: "Beef Stew".to_string(),
+///         to: "Vegetable Curry".to_string(),
+///         reason: Some("Avoiding red meat".to_string()),
+///         date: NaiveDate::from_ymd(2025, 1, 10),
+///     },
+/// ];
+///
+/// let preferences = ai_generate_preferences(&adjustments, &config).await?;
+/// // Returns: "Based on your history, you prefer vegetarian options and avoid red meat..."
+/// ```
+///
+/// # Notes
+///
+/// - Uses high reasoning effort for better preference inference
+/// - Includes retry logic (3 attempts) with exponential backoff
+/// - Typically used once during user preference migration
 pub async fn ai_generate_preferences(
     adjustments: &[UserAdjustment],
     cfg: &AiConfig,
