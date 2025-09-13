@@ -15,7 +15,7 @@
 //! The cache is fully thread-safe through internal mutex synchronization.
 //! Multiple threads can safely read and write to the cache concurrently.
 
-use crate::DishSizeIngredients;
+use crate::serde::DishSizeIngredients; // TODO: Phase 2 - update with new structures
 use eyre::Context;
 use lru::LruCache;
 use std::{

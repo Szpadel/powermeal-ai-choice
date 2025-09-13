@@ -23,7 +23,7 @@ use async_openai::{
     config::OpenAIConfig,
     types::{
         ChatCompletionRequestSystemMessage, ChatCompletionRequestUserMessage,
-        CreateChatCompletionRequestArgs, ReasoningEffort, ResponseFormat, ResponseFormatJsonSchema,
+        CreateChatCompletionRequestArgs, ResponseFormat, ResponseFormatJsonSchema,
     },
     Client,
 };
@@ -42,7 +42,8 @@ use std::{
 
 use crate::{
     preferences::{AiConfig, Preferences},
-    prompts, CalendarDayItems, DishItem,
+    prompts,
+    serde::{CalendarDayItems, DishItem}, // TODO: Phase 2 - update with new structures
 };
 
 /// Internal representation of a candidate dish for AI selection.
@@ -351,6 +352,8 @@ fn get_openai_client(config: &AiConfig) -> Client<OpenAIConfig> {
     Client::with_config(openai_config)
 }
 
+// TODO: Phase 5 - Reimplement with new API structures
+/*
 /// Core AI meal selection with preferences and history analysis.
 ///
 /// Performs intelligent meal selection by analyzing user preferences, recent meal history,
@@ -389,7 +392,7 @@ fn get_openai_client(config: &AiConfig) -> Client<OpenAIConfig> {
 /// ).await?;
 ///
 /// for (slot_id, selection) in &response.selections {
-///     println!("{}: Selected {} because {}", 
+///     println!("{}: Selected {} because {}",
 ///              slot_id, selection.dish_id, selection.reason);
 /// }
 /// ```
@@ -571,6 +574,7 @@ pub async fn select_dish(
         eyre::bail!("No response from AI");
     }
 }
+*/
 
 /// Determines the path for AI response logging.
 ///
@@ -671,6 +675,8 @@ fn log_ai_response(
     Ok(())
 }
 
+// TODO: Phase 5 - Reimplement with new API structures
+/*
 /// Converts legacy meal adjustments to natural language preferences.
 ///
 /// Analyzes historical meal adjustment records to generate a natural language
@@ -762,3 +768,4 @@ pub async fn ai_generate_preferences(
     }
     unreachable!()
 }
+*/

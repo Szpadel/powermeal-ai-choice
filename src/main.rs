@@ -5,18 +5,18 @@ mod preferences;
 pub mod prompts;
 pub mod serde;
 
-use crate::api::*;
+// use crate::api::*; // TODO: Phase 3 - re-enable with new API
 use crate::cache::IngredientsCache;
-use crate::serde::*;
-use ai::AiResponse;
-use chrono::{DateTime, Days, Local, NaiveDate, TimeZone};
+// use crate::serde::*; // TODO: Phase 2 - re-enable with new structures
+// use ai::AiResponse; // TODO: Phase 5 - re-enable for AI integration
+// use chrono::{DateTime, Days, Local, NaiveDate, TimeZone}; // TODO: Phase 5 - re-enable
 use clap::{Parser, Subcommand};
-use dialoguer::{theme::ColorfulTheme, Select};
-use eyre::{Context, ContextCompat, OptionExt};
-use indexmap::IndexMap;
+// use dialoguer::{theme::ColorfulTheme, Select}; // TODO: Phase 5 - re-enable for interactive selection
+use eyre::Context;
+// use indexmap::IndexMap; // TODO: Phase 5 - re-enable for historical orders
 use preferences::Preferences;
 use std::{
-    collections::HashMap,
+    // collections::HashMap, // TODO: Phase 5 - re-enable
     io::{self, Write},
     time::Duration,
 };
@@ -71,10 +71,13 @@ async fn main() -> eyre::Result<()> {
 
     let mut preferences = Preferences::load_preferences();
 
+    // TODO: Phase 5 - Re-enable migration when AI functions are reimplemented
+    /*
     // Migration check
     if preferences.needs_migration() {
         migrate_preferences(&mut preferences).await?;
     }
+    */
 
     let cli = Cli::parse();
 
@@ -91,16 +94,22 @@ async fn main() -> eyre::Result<()> {
         None => {}
     }
 
+    // TODO: Phase 3 - Re-enable token update with new API
+    /*
     if Preferences::token().is_none() {
         print!("Session refresh token is not set.");
         update_token().await?;
     }
+    */
 
     if Preferences::ai_config().is_none() {
         print!("AI configuration is not set.");
         ai::configure_ai().await?;
     }
 
+    // TODO: Phase 5 - Implement new workflow
+    // The main workflow is temporarily disabled during migration to new API
+    /*
     status("Authenticating...");
     let token =
         match refresh_token(&Preferences::token().ok_or_eyre("refresh token missing")?).await {
@@ -124,6 +133,11 @@ async fn main() -> eyre::Result<()> {
     for next_day in days {
         select_dishes_for_day(&token, next_day, &diets, cli.yolo, &preferences).await?;
     }
+    */
+
+    println!("PowerMeal API migration in progress. Main functionality temporarily disabled.");
+    println!("Phase 1: Old API code removal - COMPLETE");
+    println!("Phase 2: New API implementation - PENDING");
 
     Ok(())
 }
@@ -185,6 +199,8 @@ async fn main() -> eyre::Result<()> {
 /// # Ok(())
 /// # }
 /// ```
+// TODO: Phase 5 - Reimplement with new API structures
+/*
 async fn diet_for_date<'a>(
     token: &str,
     diet_list: &'a DietsList,
@@ -226,7 +242,10 @@ async fn diet_for_date<'a>(
 
     Ok(None)
 }
+*/
 
+// TODO: Phase 5 - Reimplement with new API
+/*
 async fn update_token() -> eyre::Result<RefreshTokenResponse> {
     loop {
         let token = dialoguer::Input::<String>::new()
@@ -244,7 +263,10 @@ async fn update_token() -> eyre::Result<RefreshTokenResponse> {
         }
     }
 }
+*/
 
+// TODO: Phase 5 - Reimplement with new API structures
+/*
 /// Determines which days are available for meal selection across all user's active diets.
 ///
 /// This is the critical gatekeeper function that drives the entire application workflow.
@@ -391,7 +413,10 @@ async fn days_available_to_select(
     days.sort_unstable();
     Ok(days)
 }
+*/
 
+// TODO: Phase 5 - Reimplement with new API structures
+/*
 /// Fetches diet information with fallback to alternative diets when the primary diet has no meals.
 ///
 /// This function implements a failover mechanism for diet retrieval. It first attempts to get
@@ -486,7 +511,10 @@ async fn get_diet_with_ingredients_with_fallback_search(
 
     Ok((primary_diet, primary_diet_obj.clone()))
 }
+*/
 
+// TODO: Phase 5 - Reimplement with new API structures
+/*
 /// Fetches diet information for a specific date and enriches it with ingredient details.
 ///
 /// This function retrieves the meal options available for a given diet on a specific date,
@@ -596,7 +624,10 @@ async fn get_diet_with_ingredients(
     }
     Ok(calendar_day_items)
 }
+*/
 
+// TODO: Phase 5 - Reimplement with new API structures
+/*
 /// Orchestrates the complete meal selection workflow for a single day.
 ///
 /// This function is the core business logic that handles the entire process of selecting
@@ -741,8 +772,10 @@ async fn select_dishes_for_day(
     Preferences::set_next_day_to_check(date.date_naive().checked_add_days(Days::new(1)).unwrap());
     Ok(())
 }
+*/
 
-
+// TODO: Phase 5 - Reimplement with new API structures
+/*
 async fn confirm_menu_change(
     token: &str,
     date: &NaiveDate,
@@ -781,7 +814,11 @@ async fn confirm_menu_change(
     println!();
     Ok(())
 }
+*/
 
+// TODO: Phase 5 - Reimplement with new API structures
+// The function fetch_historical_orders is commented out below
+/*
 /// Retrieves historical meal orders for a specified number of past days.
 ///
 /// This function fetches the user's meal selection history to provide context for AI-based
@@ -889,7 +926,10 @@ async fn fetch_historical_orders(
     }
     Ok(last_days_choices)
 }
+*/
 
+// TODO: Phase 5 - Reimplement with new API structures
+/*
 /// Handles the interactive or automatic selection of meals based on AI recommendations.
 ///
 /// This function presents the AI's meal recommendations to the user and handles the selection
@@ -1051,7 +1091,10 @@ async fn select_dishes(
     }
     Ok(())
 }
+*/
 
+// TODO: Phase 5 - Reimplement with new API structures
+/*
 async fn _dish_stats() -> eyre::Result<()> {
     let token = refresh_token(&Preferences::token().unwrap()).await?.token;
     let diets = fetch_diets(&token).await?;
@@ -1089,6 +1132,7 @@ async fn _dish_stats() -> eyre::Result<()> {
 
     Ok(())
 }
+*/
 
 fn init_tracing() {
     tracing_subscriber::registry()
@@ -1100,6 +1144,8 @@ fn init_tracing() {
         )
         .init();
 }
+// TODO: Phase 5 - Reimplement when AI functions are available
+/*
 /// Migrates legacy structured preferences to the new free-text format.
 ///
 /// This function handles the one-time migration from the old preference system (which used
@@ -1209,6 +1255,7 @@ async fn migrate_preferences(preferences: &mut Preferences) -> eyre::Result<()> 
     println!("You can review or modify them at any time with: powermeal edit-preferences");
     Ok(())
 }
+*/
 
 fn edit_in_editor(initial: &str) -> eyre::Result<String> {
     let tmp = tempfile::NamedTempFile::new()?;
@@ -1238,12 +1285,16 @@ fn edit_preferences_cli(preferences: &Preferences) -> eyre::Result<()> {
         println!("Describe your dietary requirements, portion preferences, allergens, and dietary goals.");
         println!("Example: 'I'm vegetarian, avoid dairy, love spicy food, need ~2000 kcal/day'");
 
+        // TODO: Phase 5 - Re-enable interactive confirmation with dialoguer
+        println!("Opening editor to create preferences...");
+        /*
         if !dialoguer::Confirm::new()
             .with_prompt("Open editor to create preferences?")
             .interact()?
         {
             return Ok(());
         }
+        */
     }
 
     let content = if is_new {
@@ -1266,15 +1317,21 @@ fn edit_preferences_cli(preferences: &Preferences) -> eyre::Result<()> {
     }
 
     if trimmed != existing {
+        // TODO: Phase 5 - Re-enable interactive confirmation with dialoguer
+        println!("Saving the changes to your preferences...");
+        /*
         if dialoguer::Confirm::new()
             .with_prompt("Save the changes to your preferences?")
             .interact()?
         {
+        */
             let mut prefs = Preferences::load_preferences();
             prefs.user_preferences = trimmed;
             prefs.save_preferences();
             println!("Preferences updated successfully.");
+        /*
         }
+        */
     } else {
         println!("No changes detected in the edited preferences.");
     }
