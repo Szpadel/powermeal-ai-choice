@@ -14,6 +14,7 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 eyre = "0.6.12"
 chrono = { version = "0.4.41", features = ["serde"] }
+chrono-tz = "0.10"
 dialoguer = { version = "0.11.0", features = ["fuzzy-select"] }
 indexmap = { version = "2.10.0", features = ["serde"] }
 clap = { version = "4.5.41", features = ["derive"] }

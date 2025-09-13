@@ -4,6 +4,7 @@ mod cache;
 mod preferences;
 pub mod prompts;
 pub mod serde;
+mod availability;
 
 // use crate::api::*; // TODO: Phase 3 - re-enable with new API
 use crate::cache::IngredientsCache;
