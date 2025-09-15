@@ -98,39 +98,6 @@ pub struct AiConfig {
 }
 
 impl Preferences {
-    /// Checks if legacy adjustment data needs migration to the new format.
-    ///
-    /// Migration is needed when there are legacy adjustments present but no
-    /// free-form preference text has been set yet.
-    ///
-    /// # Returns
-    ///
-    /// `true` if migration is needed, `false` otherwise.
-    pub fn needs_migration(&self) -> bool {
-        !self.adjustments.is_empty() && self.user_preferences.trim().is_empty()
-    }
-
-    /// Completes the migration from legacy format to free-form preferences.
-    ///
-    /// Takes the edited preference text (typically generated from legacy adjustments
-    /// and reviewed by the user) and saves it as the new preference format.
-    /// Clears the legacy adjustment data after successful migration.
-    ///
-    /// # Arguments
-    ///
-    /// * `edited_text` - The free-form preference text to save
-    ///
-    /// # Note
-    ///
-    /// Only performs migration if the edited text is non-empty.
-    pub fn complete_migration(&mut self, edited_text: String) {
-        if !edited_text.trim().is_empty() {
-            self.user_preferences = edited_text.trim().to_string();
-            self.adjustments.clear();
-            self.save_preferences();
-        }
-    }
-
     /// Returns the next day that requires meal selection.
     ///
     /// Determines the next day to check based on the last selected day.

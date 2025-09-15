@@ -15,6 +15,18 @@ use crate::serde::{
 // Base URL for PowerFoods API
 const API_BASE: &str = "https://api.powerfoods.pl/api/v1";
 
+/// Parameters for fetching menu data
+#[derive(Debug)]
+pub struct MenuFetchParams {
+    pub diet_id: i64,
+    pub var_id: i64,
+    pub var_cal_id: i64,
+    pub date: String,
+    pub menu_type: String,
+    pub brand_id: i32,
+    pub client_diet_id: i64,
+}
+
 /// API Error types for proper retry logic
 #[derive(Debug)]
 enum ApiError {
@@ -22,8 +34,6 @@ enum ApiError {
     ServerError(reqwest::StatusCode, String),
     /// Client errors (4xx) - should not retry
     ClientError(reqwest::StatusCode, String),
-    /// Rate limiting (429) - handled separately with Retry-After
-    RateLimited(u64),
     /// Network or other errors
     Other(eyre::Error),
 }
@@ -33,7 +43,6 @@ impl From<ApiError> for eyre::Error {
         match err {
             ApiError::ServerError(status, body) => eyre::eyre!("Server error {}: {}", status, body),
             ApiError::ClientError(status, body) => eyre::eyre!("Client error {}: {}", status, body),
-            ApiError::RateLimited(seconds) => eyre::eyre!("Rate limited, retry after {} seconds", seconds),
             ApiError::Other(e) => e,
         }
     }
@@ -97,21 +106,15 @@ pub async fn fetch_diet_details(token: &str, client_diet_id: i64) -> eyre::Resul
 /// Fetch menu (all available or current selections)
 pub async fn fetch_menu(
     token: &str,
-    diet_id: i64,
-    var_id: i64,
-    var_cal_id: i64,
-    date: &str,
-    menu_type: &str, // "all" or "client"
-    brand_id: i32,
-    client_diet_id: i64,
+    params: MenuFetchParams,
 ) -> eyre::Result<MenuResponse> {
     let url = format!(
         "{}/diets/menu?diet_id={}&var_id={}&var_cal_id={}&dmenu={}&type={}&brand_id={}&client_diet_id={}",
-        API_BASE, diet_id, var_id, var_cal_id, date, menu_type, brand_id, client_diet_id
+        API_BASE, params.diet_id, params.var_id, params.var_cal_id, params.date, params.menu_type, params.brand_id, params.client_diet_id
     );
 
     let response = send_request_with_retry(&url, token, reqwest::Method::GET, None).await
-        .wrap_err_with(|| format!("Failed to fetch menu for date: {}", date))?;
+        .wrap_err_with(|| format!("Failed to fetch menu for date: {}", params.date))?;
 
     match serde_json::from_str::<MenuResponse>(&response) {
         Ok(menu) => Ok(menu),
@@ -259,7 +262,7 @@ async fn send_request(
 mod tests {
     use super::*;
     use serde_json::json;
-    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as BASE64};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 
     // Helper to create token from JSON payload
     fn create_token(payload: serde_json::Value) -> String {

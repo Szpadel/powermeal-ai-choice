@@ -1,7 +1,6 @@
 //! Data models for PowerFoods API serialization and deserialization.
 //!
-//! This module contains data structures for the new PowerFoods API.
-//! Phase 2 implementation: New API data models.
+//! This module contains data structures for the PowerFoods API.
 
 use serde::{Deserialize, Deserializer, Serialize};
 
