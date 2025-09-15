@@ -62,10 +62,6 @@ where
     deserializer.deserialize_any(StringOrIntVisitor)
 }
 
-// ============================================================================
-// Client Diet List Structures
-// ============================================================================
-
 /// Response from GET /clientDiets endpoint
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ClientDietsResponse {
@@ -137,12 +133,21 @@ pub struct ClientDietItem {
     pub diet_id: i64,
     pub var_id: i64,
     pub var_cal_id: i64,
-    // We don't use has_menu_choice or dishes, so we skip them
+    pub dishes: Option<Vec<ExistingDish>>, // Existing dish selections
 }
 
-// ============================================================================
-// Menu Structures
-// ============================================================================
+/// Existing dish selection in ClientDietItem
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ExistingDish {
+    #[serde(deserialize_with = "deserialize_string_or_int")]
+    pub id: i32,                        // client_diet_dishes ID (used for PATCH)
+    #[serde(deserialize_with = "deserialize_string_or_int")]
+    pub dish_id: i32,                   // The dish ID
+    #[serde(deserialize_with = "deserialize_string_or_int")]
+    pub var_cal_meal_id: i32,           // Meal variant ID (unique per meal slot)
+    #[serde(deserialize_with = "deserialize_string_or_int")]
+    pub meal_id: i32,                   // Meal ID
+}
 
 /// Response from GET /diets/menu endpoint
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -167,10 +172,6 @@ pub struct MenuDish {
     pub dmenu: String,                  // Date for history context
 }
 
-// ============================================================================
-// Update Request Structures
-// ============================================================================
-
 /// Request body for POST /clientDiets/dish endpoint
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DishUpdateRequest {
@@ -181,9 +182,6 @@ pub struct DishUpdateRequest {
     pub var_cal_meal_id: i64,
 }
 
-// ============================================================================
-// Delivery Configuration Structures
-// ============================================================================
 
 /// Response from GET /diets/delivery endpoint
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -204,26 +202,4 @@ pub struct DeliveryRule {
     pub delv_day_id: i32,               // delivery day
     pub delv_type_id: i32,              // 5 = menu selection
     pub delv_time: Option<String>,      // cutoff time (can be null for some types)
-}
-
-// ============================================================================
-// Legacy Placeholder Structures (to be removed in Phase 5)
-// ============================================================================
-
-/// Placeholder for backward compatibility - will be removed
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct CalendarDayItems {
-    pub placeholder: String,
-}
-
-/// Placeholder for backward compatibility - will be removed
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct DishItem {
-    pub placeholder: String,
-}
-
-/// Placeholder for backward compatibility - will be removed
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct DishSizeIngredients {
-    pub placeholder: String,
 }

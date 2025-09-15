@@ -535,15 +535,22 @@ isMenuSelectionAvailable(deliveryDate) {
 
 Menu selection updates allow users to change their meal selections for specific days. The system uses a single POST endpoint that handles both adding new selections and updating existing ones.
 
-### Update Endpoint
+### Update Endpoints
 
-#### Update/Add Dish Selection
+#### Add New Dish Selection
 ```
 POST /clientDiets/dish
 ```
-- **Purpose:** Update or add dish selection for a meal (backend determines the operation)
+- **Purpose:** Add a new dish selection for a meal (when no dish currently exists for that meal)
 - **Evidence:** `powermealjs/main-S3CCR4PT.js:42017-42019`
-- **Note:** While the frontend code contains logic for both POST and PATCH operations (lines 55842-55843), actual testing confirms only POST is used
+
+#### Update Existing Dish Selection
+```
+PATCH /clientDiets/dish/{id}
+```
+- **Purpose:** Update an existing dish selection for a meal (when a dish already exists for that meal)
+- **Evidence:** `powermealjs/main-S3CCR4PT.js:42020-42022`
+- **Note:** The `{id}` parameter is the existing dish's client_diet_dishes ID (not the dish_id)
 - **Request Body:**
   ```json
   {
@@ -620,13 +627,13 @@ saveMenuChange(t) {
         var_cal_meal_id: t.var_cal_meal_id        // Meal variant
     },
 
-    // Frontend checks for existing dish but always uses POST
+    // Frontend checks for existing dish to determine POST or PATCH
     r = this.currentDayInfo.dishes.find(l =>
         Number(l.var_cal_meal_id) === t.var_cal_meal_id),
 
-    // Note: Code shows PATCH logic but testing confirms only POST is used
-    a = r ? this.cds.updateDishToClientDiet(n, Number(r.id))  // Would call PATCH (not used)
-          : this.cds.addDishToClientDiet(n),                   // Calls POST (always used)
+    // Use PATCH if dish exists, POST if new
+    a = r ? this.cds.updateDishToClientDiet(n, Number(r.id))  // Calls PATCH (when dish exists)
+          : this.cds.addDishToClientDiet(n),                   // Calls POST (when new dish)
 
     // Find currently selected dish for this meal
     s = this.getSelectedDish(this.mealGroups.find(l =>
@@ -659,12 +666,12 @@ saveMenuChange(t) {
 // Line 41954
 this.apiUrl = `${Fe}/clientDiets`  // Fe = "https://api.powerfoods.pl/api/v1"
 
-// Lines 42017-42019 - This is the method actually used
+// Lines 42017-42019 - POST method for new dishes
 addDishToClientDiet(t) {
     return this.http.post(`${this.apiUrl}/dish`, t, this.httpOptions)
 }
 
-// Lines 42020-42022 - This exists in code but is not used in practice
+// Lines 42020-42022 - PATCH method for updating existing dishes
 updateDishToClientDiet(t, n) {
     return this.http.patch(`${this.apiUrl}/dish/${n}`, t, this.httpOptions)
 }
@@ -697,11 +704,12 @@ refreshClientDietsDetails(t) {
 
 ### Important Notes
 
-1. **Single Endpoint for All Operations:** The backend handles both adding new selections and updating existing ones through the same POST endpoint
-2. **Frontend Code vs Actual Behavior:** While the frontend code contains logic to choose between POST and PATCH based on existing dishes, testing confirms only POST is used in practice
-3. **Backend Logic:** The API backend likely determines whether to update or add based on the combination of `client_diet_item_id` and `var_cal_meal_id`
+1. **Two Separate Endpoints:** The backend requires using POST for new dish selections and PATCH for updating existing ones
+2. **Frontend Logic:** The frontend correctly checks for existing dishes by `var_cal_meal_id` to determine which endpoint to use
+3. **Backend Enforcement:** The API returns a 400 error if you try to POST when a dish already exists (returns message: "Such a meal already exists, use PATCH to update it")
 4. **Day-Specific Updates:** Each update is tied to a specific day via `client_diet_item_id`
 5. **Meal Variant Logic:** The system uses `var_cal_meal_id` to identify unique meal slots
+6. **Existing Dish ID:** When using PATCH, the ID in the URL path is the existing dish's `client_diet_dishes` ID (obtained from `currentDayInfo.dishes`)
 
 ### Update Process Summary
 
@@ -710,8 +718,9 @@ refreshClientDietsDetails(t) {
 3. Parent shows confirmation dialog: "Jesteś pewny że chcesz zmienić menu?"
 4. On confirmation, `saveMenuChange` executes:
    - Prepares payload with day and dish identifiers
-   - Always calls `addDishToClientDiet` (POST) regardless of existing dishes
-   - Backend handles whether to update or add based on the payload
+   - Checks if dish with same `var_cal_meal_id` exists
+   - Calls `updateDishToClientDiet` (PATCH) if dish exists, with the existing dish ID
+   - Calls `addDishToClientDiet` (POST) if it's a new dish
    - Updates local state optimistically
 5. On API success, refreshes complete diet details
 
@@ -727,5 +736,5 @@ Key patterns identified:
 - HTTP options with headers at lines 18260, 41950, 45354
 - Authorization header setting at lines 42038, 46079, 46086
 - Endpoint usage throughout the service classes
-- Menu update implementation at lines 55833-55846, 42017-42019
-- Confirmed through testing: Only POST endpoint is used, not PATCH
+- Menu update implementation at lines 55833-55846, 42017-42022
+- Frontend determines POST vs PATCH based on existing dish with same var_cal_meal_id

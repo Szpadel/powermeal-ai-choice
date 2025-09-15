@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use dialoguer::{Confirm, Select, theme::ColorfulTheme};
 use eyre::{Context, eyre};
 use preferences::Preferences;
-use serde::{ClientDiet, MenuDish, DishUpdateRequest, DeliveryConfig};
+use serde::{ClientDiet, MenuDish, DishUpdateRequest, DeliveryConfig, ExistingDish};
 use std::{
     collections::HashMap,
     io::{self, Write},
@@ -1342,6 +1342,7 @@ struct AvailableDay {
     diet_id: i64,
     var_id: i64,
     var_cal_id: i64,
+    existing_dishes: Vec<ExistingDish>,  // Track existing dish selections
 }
 
 // Find all available days across all client diets
@@ -1384,6 +1385,7 @@ async fn find_available_days(
                         diet_id: diet.diet_id,
                         var_id: diet.var_id,
                         var_cal_id: diet.var_cal_id,
+                        existing_dishes: item.dishes.clone().unwrap_or_default(),
                     });
                 }
                 Ok(false) => {
@@ -1435,19 +1437,27 @@ async fn submit_menu_updates(
 
     for (_meal_seq, dish) in selections {
         // Create update request
+        let var_cal_meal_id = dish.var_cal_meal_id.unwrap_or_else(|| {
+            eprintln!("Warning: var_cal_meal_id missing for dish {}", dish.dish_name);
+            0
+        });
+
         let update_request = DishUpdateRequest {
             brand_id,
             client_diet_item_id: day.client_diet_item_id,
             dish_id: dish.dish_id,
             diet_id: day.diet_id,
-            var_cal_meal_id: dish.var_cal_meal_id.unwrap_or_else(|| {
-                eprintln!("Warning: var_cal_meal_id missing for dish {}", dish.dish_name);
-                0
-            }),
+            var_cal_meal_id,
         };
 
-        // Submit the update
-        update_dish_selection(token, &update_request)
+        // Check if there's an existing dish for this meal (same var_cal_meal_id)
+        let existing_dish_id = day.existing_dishes
+            .iter()
+            .find(|d| d.var_cal_meal_id == var_cal_meal_id as i32)
+            .map(|d| d.id);
+
+        // Submit the update (PATCH if existing, POST if new)
+        update_dish_selection(token, &update_request, existing_dish_id)
             .await
             .wrap_err(format!(
                 "Failed to update dish selection for {} on {}",
@@ -1485,6 +1495,7 @@ async fn fetch_meal_history(
         let date_str = date.format("%Y-%m-%d").to_string();
 
         // Try to fetch menu for this date
+        status(&format!("Fetching history for {}...", date_str));
         match fetch_menu(
             token,
             diet_id,

@@ -124,15 +124,28 @@ pub async fn fetch_menu(
 }
 
 /// Update single dish selection
+/// If existing_dish_id is provided, uses PATCH to update existing dish.
+/// Otherwise uses POST to create new dish selection.
 pub async fn update_dish_selection(
     token: &str,
     update: &DishUpdateRequest,
+    existing_dish_id: Option<i32>,
 ) -> eyre::Result<()> {
-    let url = format!("{}/clientDiets/dish", API_BASE);
+    let (url, method) = match existing_dish_id {
+        Some(id) => {
+            // Use PATCH to update existing dish
+            (format!("{}/clientDiets/dish/{}", API_BASE, id), reqwest::Method::PATCH)
+        }
+        None => {
+            // Use POST to create new dish selection
+            (format!("{}/clientDiets/dish", API_BASE), reqwest::Method::POST)
+        }
+    };
+
     let body = serde_json::to_string(update)
         .wrap_err("Failed to serialize dish update request")?;
 
-    let _response = send_request_with_retry(&url, token, reqwest::Method::POST, Some(body)).await
+    let _response = send_request_with_retry(&url, token, method, Some(body)).await
         .wrap_err("Failed to update dish selection")?;
 
     Ok(())
