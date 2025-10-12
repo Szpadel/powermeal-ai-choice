@@ -223,12 +223,9 @@ pub struct ResponseItem {
 async fn fetch_models(client: &Client<OpenAIConfig>) -> Result<Vec<String>> {
     match client.models().list().await {
         Ok(models) => {
-            let model_names: Vec<String> = models.data
-                .into_iter()
-                .map(|model| model.id)
-                .collect();
+            let model_names: Vec<String> = models.data.into_iter().map(|model| model.id).collect();
             Ok(model_names)
-        },
+        }
         Err(err) => {
             eprintln!("Failed to fetch models: {err}");
             Err(Report::new(err))
@@ -297,7 +294,9 @@ pub async fn configure_ai() -> Result<AiConfig> {
     println!("AI Configuration Setup");
 
     let api_base = Input::<String>::new()
-        .with_prompt("Enter API base URL (e.g., https://api.openai.com/v1 or your LiteLLM server URL)")
+        .with_prompt(
+            "Enter API base URL (e.g., https://api.openai.com/v1 or your LiteLLM server URL)",
+        )
         .default("https://api.openai.com/v1".to_string())
         .interact()?;
 
@@ -361,8 +360,8 @@ fn get_openai_client(config: &AiConfig) -> Client<OpenAIConfig> {
 /// # Arguments
 ///
 /// * `date` - The date for which meals are being selected
-/// * `available_by_meal` - Available dishes grouped by meal_seq
-/// * `current_by_meal` - Current selections grouped by meal_seq (currently unused but kept for future use)
+/// * `available_by_meal` - Available dishes grouped by meal_id
+/// * `current_by_meal` - Current selections grouped by meal_id (currently unused but kept for future use)
 /// * `meal_history` - Recent meal selections for variety and pattern analysis
 /// * `user_preferences` - Natural language description of dietary preferences
 ///
@@ -392,7 +391,7 @@ pub async fn select_dish(
     }
 
     // Build mappings for logging
-    let mut meal_name_by_seq = HashMap::new();
+    let mut meal_name_by_id = HashMap::new();
     let mut dish_name_by_id = HashMap::new();
     let mut dish_candidates_by_meal = HashMap::new();
 
@@ -400,14 +399,21 @@ pub async fn select_dish(
     let mut properties = serde_json::Map::new();
     let mut required_meals = Vec::new();
 
-    for (meal_seq, dishes) in available_by_meal {
-        if dishes.is_empty() {
-            continue;
-        }
+    let mut ordered_meal_ids: Vec<(i32, i32)> = available_by_meal
+        .iter()
+        .filter_map(|(meal_id, dishes)| dishes.first().map(|d| (*meal_id, d.meal_seq)))
+        .collect();
+    ordered_meal_ids.sort_by_key(|(_, seq)| *seq);
+
+    for (meal_id, _) in &ordered_meal_ids {
+        let dishes = match available_by_meal.get(meal_id) {
+            Some(dishes) if !dishes.is_empty() => dishes,
+            _ => continue,
+        };
 
         // Get meal name from first dish (all dishes in group have same meal)
         let meal_name = &dishes[0].meal_name;
-        meal_name_by_seq.insert(*meal_seq, meal_name.clone());
+        meal_name_by_id.insert(*meal_id, meal_name.clone());
 
         // Build candidates for logging
         let mut candidates = Vec::new();
@@ -490,8 +496,10 @@ pub async fn select_dish(
     for dish in meal_history {
         // Parse the dish date and calculate days ago
         // TODO: move data parsing to api.rs, so we do not need to have scatered parsing logic
-        let dish_date = NaiveDate::parse_from_str(&dish.dmenu, "%Y-%m-%d")
-            .wrap_err(format!("Invalid date format in meal history: {}", dish.dmenu))?;
+        let dish_date = NaiveDate::parse_from_str(&dish.dmenu, "%Y-%m-%d").wrap_err(format!(
+            "Invalid date format in meal history: {}",
+            dish.dmenu
+        ))?;
 
         let days_ago = (date - dish_date).num_days();
         let date_label = match days_ago {
@@ -507,7 +515,10 @@ pub async fn select_dish(
             id: dish.dish_id.to_string(),
         };
 
-        history_by_date.entry(date_label).or_default().push(ai_option);
+        history_by_date
+            .entry(date_label)
+            .or_default()
+            .push(ai_option);
     }
 
     // Build dish items for AI
@@ -518,13 +529,14 @@ pub async fn select_dish(
         }
 
         let meal_name = &dishes[0].meal_name;
-        let options: Vec<AiMenuDietOption> = dishes.iter().map(|dish| {
-            AiMenuDietOption {
+        let options: Vec<AiMenuDietOption> = dishes
+            .iter()
+            .map(|dish| AiMenuDietOption {
                 name: dish.dish_name.clone(),
                 ingredients: dish.dish_ing_names.clone().unwrap_or_default(),
                 id: dish.dish_id.to_string(),
-            }
-        }).collect();
+            })
+            .collect();
 
         dish_items.push(AiDishItem {
             id: meal_name.clone(),
@@ -540,17 +552,16 @@ pub async fn select_dish(
         menu_date: date,
     };
 
-    let system_prompt = prompts::build_meal_selection_system_prompt(
-        user_preferences,
-        !meal_history.is_empty(),
-    );
+    let system_prompt =
+        prompts::build_meal_selection_system_prompt(user_preferences, !meal_history.is_empty());
 
     let request = CreateChatCompletionRequestArgs::default()
         .max_tokens(1024u32 * 40)
         .model(&ai_config.model)
         .messages([
             ChatCompletionRequestSystemMessage::from(system_prompt).into(),
-            ChatCompletionRequestUserMessage::from(serde_json::to_string(&question).unwrap()).into(),
+            ChatCompletionRequestUserMessage::from(serde_json::to_string(&question).unwrap())
+                .into(),
         ])
         .response_format(response_format)
         .build()?;
@@ -567,10 +578,17 @@ pub async fn select_dish(
                 if content.trim().is_empty() {
                     retries += 1;
                     if retries <= MAX_RETRIES {
-                        tracing::warn!("Received empty response from AI, retrying... ({}/{})", retries, MAX_RETRIES);
+                        tracing::warn!(
+                            "Received empty response from AI, retrying... ({}/{})",
+                            retries,
+                            MAX_RETRIES
+                        );
                         continue;
                     }
-                    eyre::bail!("Received empty response from AI after {} retries", MAX_RETRIES);
+                    eyre::bail!(
+                        "Received empty response from AI after {} retries",
+                        MAX_RETRIES
+                    );
                 }
 
                 let response: AiResponse = serde_json::from_str(content)
@@ -580,7 +598,9 @@ pub async fn select_dish(
                 if let Err(e) = log_ai_response(
                     date,
                     &response,
-                    &meal_name_by_seq.values().map(|v| (v.clone(), v.clone()))
+                    &meal_name_by_id
+                        .values()
+                        .map(|v| (v.clone(), v.clone()))
                         .collect(),
                     &dish_name_by_id,
                     &dish_candidates_by_meal,
@@ -595,7 +615,6 @@ pub async fn select_dish(
         eyre::bail!("No response from AI");
     }
 }
-
 
 /// Determines the path for AI response logging.
 ///
@@ -695,4 +714,3 @@ fn log_ai_response(
     writeln!(f)?; // blank line separator
     Ok(())
 }
-

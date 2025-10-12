@@ -17,8 +17,14 @@ pub fn is_menu_selection_available(
     diet_item: &ClientDietItem,
     delivery_config: &DeliveryConfig,
 ) -> Result<bool> {
-    let delivery_date = NaiveDate::parse_from_str(&diet_item.date_dlv, "%Y-%m-%d")
-        .map_err(|e| eyre!("Failed to parse delivery date '{}': {}", diet_item.date_dlv, e))?;
+    let delivery_date =
+        NaiveDate::parse_from_str(&diet_item.date_dlv, "%Y-%m-%d").map_err(|e| {
+            eyre!(
+                "Failed to parse delivery date '{}': {}",
+                diet_item.date_dlv,
+                e
+            )
+        })?;
 
     let time_remaining = calculate_time_remaining(&delivery_date, delivery_config)?;
     Ok(time_remaining > Duration::zero())
@@ -46,8 +52,12 @@ fn calculate_time_remaining_with_time(
     let delivery_day_id = get_day_id(delivery_date.weekday());
 
     // Find the menu selection rule for this delivery day
-    let rule = find_menu_selection_rule(config, delivery_day_id)
-        .ok_or_else(|| eyre!("No menu selection rule found for delivery day {}", delivery_day_id))?;
+    let rule = find_menu_selection_rule(config, delivery_day_id).ok_or_else(|| {
+        eyre!(
+            "No menu selection rule found for delivery day {}",
+            delivery_day_id
+        )
+    })?;
 
     // Parse the cutoff time
     let cutoff_time = match &rule.delv_time {
@@ -70,8 +80,13 @@ fn calculate_time_remaining_with_time(
 }
 
 /// Find the menu selection rule for a given delivery day
-fn find_menu_selection_rule(config: &DeliveryConfig, delivery_day_id: i32) -> Option<&crate::serde::DeliveryRule> {
-    config.data.delivery
+fn find_menu_selection_rule(
+    config: &DeliveryConfig,
+    delivery_day_id: i32,
+) -> Option<&crate::serde::DeliveryRule> {
+    config
+        .data
+        .delivery
         .iter()
         .find(|r| r.delv_type_id == 5 && r.day_id == delivery_day_id)
 }
@@ -102,7 +117,11 @@ fn parse_cutoff_time(time_str: &str) -> Result<NaiveTime> {
 /// Calculate the actual cutoff date based on delivery date and day IDs
 ///
 /// The cutoff happens on `cutoff_day_id` before the `delivery_date`
-fn calculate_cutoff_date(delivery_date: &NaiveDate, delivery_day_id: i32, cutoff_day_id: i32) -> NaiveDate {
+fn calculate_cutoff_date(
+    delivery_date: &NaiveDate,
+    delivery_day_id: i32,
+    cutoff_day_id: i32,
+) -> NaiveDate {
     // Calculate how many days before delivery the cutoff is
     let days_diff = if cutoff_day_id <= delivery_day_id {
         delivery_day_id - cutoff_day_id
@@ -118,8 +137,8 @@ fn calculate_cutoff_date(delivery_date: &NaiveDate, delivery_day_id: i32, cutoff
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{NaiveDateTime, Timelike};
     use crate::serde::{DeliveryData, DeliveryRule};
+    use chrono::{NaiveDateTime, Timelike};
 
     #[test]
     fn test_get_day_id() {
@@ -215,7 +234,7 @@ mod tests {
                         delv_day_id: 5,
                         delv_time: Some("05:00:00".to_string()),
                     },
-                ]
+                ],
             },
         }
     }
@@ -229,10 +248,8 @@ mod tests {
         // For Sept 16 (Monday), cutoff is Sept 14 (Saturday) at 05:00
 
         // To have 3-4 hours remaining, we need to be around Sept 14 at 01:00-02:00
-        let mock_time_naive = NaiveDateTime::parse_from_str(
-            "2025-09-14 01:30:00",
-            "%Y-%m-%d %H:%M:%S"
-        ).unwrap();
+        let mock_time_naive =
+            NaiveDateTime::parse_from_str("2025-09-14 01:30:00", "%Y-%m-%d %H:%M:%S").unwrap();
 
         let mock_time = Warsaw
             .from_local_datetime(&mock_time_naive)
@@ -240,11 +257,8 @@ mod tests {
             .unwrap();
 
         // Calculate time remaining with mocked time
-        let time_remaining = calculate_time_remaining_with_time(
-            &delivery_date,
-            &config,
-            mock_time
-        ).unwrap();
+        let time_remaining =
+            calculate_time_remaining_with_time(&delivery_date, &config, mock_time).unwrap();
 
         let hours = time_remaining.num_hours();
         let minutes = time_remaining.num_minutes() % 60;
@@ -254,9 +268,12 @@ mod tests {
         // Should be approximately 3.5 hours (3 hours 30 minutes)
         assert_eq!(hours, 3);
         assert_eq!(minutes, 30);
-        assert!(hours >= 3 && hours <= 4,
-                "Expected 3-4 hours remaining, got {} hours {} minutes",
-                hours, minutes);
+        assert!(
+            hours >= 3 && hours <= 4,
+            "Expected 3-4 hours remaining, got {} hours {} minutes",
+            hours,
+            minutes
+        );
     }
 
     #[test]
@@ -267,9 +284,10 @@ mod tests {
 
         // Mock the actual recording time
         let recording_time_naive = NaiveDateTime::parse_from_str(
-            "2025-09-14 01:18:30",  // Saturday morning, before 05:00 cutoff
-            "%Y-%m-%d %H:%M:%S"
-        ).unwrap();
+            "2025-09-14 01:18:30", // Saturday morning, before 05:00 cutoff
+            "%Y-%m-%d %H:%M:%S",
+        )
+        .unwrap();
 
         let recording_time = Warsaw
             .from_local_datetime(&recording_time_naive)
@@ -277,24 +295,26 @@ mod tests {
             .unwrap();
 
         // Calculate time remaining
-        let time_remaining = calculate_time_remaining_with_time(
-            &delivery_date,
-            &config,
-            recording_time
-        ).unwrap();
+        let time_remaining =
+            calculate_time_remaining_with_time(&delivery_date, &config, recording_time).unwrap();
 
         // Should be positive (about 3h 41min 30s remaining)
-        assert!(time_remaining > Duration::zero(),
-                "Expected positive time remaining, got {:?}",
-                time_remaining);
+        assert!(
+            time_remaining > Duration::zero(),
+            "Expected positive time remaining, got {:?}",
+            time_remaining
+        );
 
         let hours = time_remaining.num_hours();
         let minutes = (time_remaining.num_minutes() % 60) as i32;
 
         // Should be approximately 3 hours 41 minutes
-        assert!(hours == 3 && minutes >= 40 && minutes <= 42,
-                "Expected ~3h 41min remaining, got {}h {}min",
-                hours, minutes);
+        assert!(
+            hours == 3 && minutes >= 40 && minutes <= 42,
+            "Expected ~3h 41min remaining, got {}h {}min",
+            hours,
+            minutes
+        );
     }
 
     #[test]
@@ -317,13 +337,23 @@ mod tests {
             let rule = find_menu_selection_rule(&config, delivery_day_id);
 
             if let Some(expected) = expected_cutoff_day {
-                assert!(rule.is_some(),
-                        "Expected rule for delivery day {}", delivery_day_id);
-                assert_eq!(rule.unwrap().delv_day_id, expected,
-                          "Wrong cutoff day for delivery day {}", delivery_day_id);
+                assert!(
+                    rule.is_some(),
+                    "Expected rule for delivery day {}",
+                    delivery_day_id
+                );
+                assert_eq!(
+                    rule.unwrap().delv_day_id,
+                    expected,
+                    "Wrong cutoff day for delivery day {}",
+                    delivery_day_id
+                );
             } else {
-                assert!(rule.is_none(),
-                        "Unexpected rule for delivery day {}", delivery_day_id);
+                assert!(
+                    rule.is_none(),
+                    "Unexpected rule for delivery day {}",
+                    delivery_day_id
+                );
             }
         }
     }
@@ -347,19 +377,20 @@ mod tests {
 
         for (delivery_str, expected_cutoff_str) in test_cases {
             let delivery_date = NaiveDate::parse_from_str(delivery_str, "%Y-%m-%d").unwrap();
-            let expected_cutoff = NaiveDate::parse_from_str(expected_cutoff_str, "%Y-%m-%d").unwrap();
+            let expected_cutoff =
+                NaiveDate::parse_from_str(expected_cutoff_str, "%Y-%m-%d").unwrap();
 
             let delivery_day_id = get_day_id(delivery_date.weekday());
 
             if let Some(rule) = find_menu_selection_rule(&config, delivery_day_id) {
-                let calculated_cutoff = calculate_cutoff_date(
-                    &delivery_date,
-                    delivery_day_id,
-                    rule.delv_day_id
-                );
+                let calculated_cutoff =
+                    calculate_cutoff_date(&delivery_date, delivery_day_id, rule.delv_day_id);
 
-                assert_eq!(calculated_cutoff, expected_cutoff,
-                          "Wrong cutoff date for delivery on {}", delivery_str);
+                assert_eq!(
+                    calculated_cutoff, expected_cutoff,
+                    "Wrong cutoff date for delivery on {}",
+                    delivery_str
+                );
             }
         }
     }

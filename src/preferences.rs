@@ -39,13 +39,13 @@ const PREFERENCES_FILE: &str = ".config/powermeal-ai/preferences.json";
 ///
 /// ```no_run
 /// let prefs = Preferences::load_preferences();
-/// 
+///
 /// // Check if migration is needed
 /// if prefs.needs_migration() {
 ///     // Perform migration with edited text
 ///     prefs.complete_migration(edited_text);
 /// }
-/// 
+///
 /// // Access user preferences
 /// println!("User preferences: {}", prefs.user_preferences);
 /// ```
@@ -64,10 +64,10 @@ pub struct Preferences {
     /// Tracks the last day for which meals were selected.
     /// Used to determine the next day requiring meal selection.
     last_day_selected: Option<NaiveDate>,
-    
+
     /// Authentication token for PowerMeal API access.
     token: Option<String>,
-    
+
     /// Configuration for AI service integration.
     pub ai_config: Option<AiConfig>,
 }
@@ -110,16 +110,14 @@ impl Preferences {
     /// * `None` - If no previous selection has been made
     pub fn next_day_to_check() -> Option<DateTime<Local>> {
         let now = Local::now();
-        Self::load_preferences()
-            .last_day_selected
-            .map(|d| {
-                let date = Local.from_local_datetime(&d.into()).unwrap();
-                if date < now {
-                    now
-                } else {
-                    date
-                }
-            })
+        Self::load_preferences().last_day_selected.map(|d| {
+            let date = Local.from_local_datetime(&d.into()).unwrap();
+            if date < now {
+                now
+            } else {
+                date
+            }
+        })
     }
 
     /// Updates the last selected day for progress tracking.

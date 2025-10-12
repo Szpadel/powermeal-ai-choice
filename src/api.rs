@@ -3,14 +3,13 @@
 //! This module provides API client functionality for the new PowerFoods API.
 //! Phase 3 implementation complete with all new API functions.
 
-use eyre::{Context, bail};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as BASE64};
+use crate::serde::{
+    ClientDietDetails, ClientDietsResponse, DeliveryConfig, DishUpdateRequest, MenuResponse,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD as BASE64, Engine as _};
+use eyre::{bail, Context};
 use serde_json::Value;
 use std::result::Result;
-use crate::serde::{
-    ClientDietsResponse, ClientDietDetails, MenuResponse,
-    DishUpdateRequest, DeliveryConfig
-};
 
 // Base URL for PowerFoods API
 const API_BASE: &str = "https://api.powerfoods.pl/api/v1";
@@ -62,10 +61,9 @@ pub fn extract_brand_id(token: &str) -> eyre::Result<i32> {
         .wrap_err("Failed to decode JWT payload")?;
 
     // Parse JSON payload
-    let payload_str = String::from_utf8(payload_bytes)
-        .wrap_err("Invalid UTF-8 in JWT payload")?;
-    let payload: Value = serde_json::from_str(&payload_str)
-        .wrap_err("Failed to parse JWT payload as JSON")?;
+    let payload_str = String::from_utf8(payload_bytes).wrap_err("Invalid UTF-8 in JWT payload")?;
+    let payload: Value =
+        serde_json::from_str(&payload_str).wrap_err("Failed to parse JWT payload as JSON")?;
 
     // Extract brand_id
     let brand_id = payload["brand_id"]
@@ -78,49 +76,63 @@ pub fn extract_brand_id(token: &str) -> eyre::Result<i32> {
 /// Fetch active client diets
 pub async fn fetch_client_diets(token: &str, brand_id: i32) -> eyre::Result<ClientDietsResponse> {
     let url = format!("{}/clientDiets?brand_id={}&type=active", API_BASE, brand_id);
-    let response = send_request_with_retry(&url, token, reqwest::Method::GET, None).await
+    let response = send_request_with_retry(&url, token, reqwest::Method::GET, None)
+        .await
         .wrap_err("Failed to fetch client diets")?;
 
-    let diets: ClientDietsResponse = serde_json::from_str(&response)
-        .wrap_err("Failed to parse client diets response")?;
+    let diets: ClientDietsResponse =
+        serde_json::from_str(&response).wrap_err("Failed to parse client diets response")?;
 
     Ok(diets)
 }
 
 /// Fetch diet details with days
-pub async fn fetch_diet_details(token: &str, client_diet_id: i64) -> eyre::Result<ClientDietDetails> {
+pub async fn fetch_diet_details(
+    token: &str,
+    client_diet_id: i64,
+) -> eyre::Result<ClientDietDetails> {
     let url = format!("{}/clientDiets/{}", API_BASE, client_diet_id);
-    let response = send_request_with_retry(&url, token, reqwest::Method::GET, None).await
-        .wrap_err_with(|| format!("Failed to fetch diet details for client_diet_id: {}", client_diet_id))?;
+    let response = send_request_with_retry(&url, token, reqwest::Method::GET, None)
+        .await
+        .wrap_err_with(|| {
+            format!(
+                "Failed to fetch diet details for client_diet_id: {}",
+                client_diet_id
+            )
+        })?;
 
     match serde_json::from_str::<ClientDietDetails>(&response) {
         Ok(details) => Ok(details),
         Err(e) => {
             eprintln!("DEBUG: Parse error: {}", e);
-            eprintln!("DEBUG: Raw response (first 500 chars): {}", &response[..response.len().min(500)]);
+            eprintln!(
+                "DEBUG: Raw response (first 500 chars): {}",
+                &response[..response.len().min(500)]
+            );
             Err(e).wrap_err("Failed to parse diet details response")
         }
     }
 }
 
 /// Fetch menu (all available or current selections)
-pub async fn fetch_menu(
-    token: &str,
-    params: MenuFetchParams,
-) -> eyre::Result<MenuResponse> {
+pub async fn fetch_menu(token: &str, params: MenuFetchParams) -> eyre::Result<MenuResponse> {
     let url = format!(
         "{}/diets/menu?diet_id={}&var_id={}&var_cal_id={}&dmenu={}&type={}&brand_id={}&client_diet_id={}",
         API_BASE, params.diet_id, params.var_id, params.var_cal_id, params.date, params.menu_type, params.brand_id, params.client_diet_id
     );
 
-    let response = send_request_with_retry(&url, token, reqwest::Method::GET, None).await
+    let response = send_request_with_retry(&url, token, reqwest::Method::GET, None)
+        .await
         .wrap_err_with(|| format!("Failed to fetch menu for date: {}", params.date))?;
 
     match serde_json::from_str::<MenuResponse>(&response) {
         Ok(menu) => Ok(menu),
         Err(e) => {
             eprintln!("DEBUG: Menu parse error: {}", e);
-            eprintln!("DEBUG: Menu response (first 500 chars): {}", &response[..response.len().min(500)]);
+            eprintln!(
+                "DEBUG: Menu response (first 500 chars): {}",
+                &response[..response.len().min(500)]
+            );
             Err(e).wrap_err("Failed to parse menu response")
         }
     }
@@ -137,18 +149,24 @@ pub async fn update_dish_selection(
     let (url, method) = match existing_dish_id {
         Some(id) => {
             // Use PATCH to update existing dish
-            (format!("{}/clientDiets/dish/{}", API_BASE, id), reqwest::Method::PATCH)
+            (
+                format!("{}/clientDiets/dish/{}", API_BASE, id),
+                reqwest::Method::PATCH,
+            )
         }
         None => {
             // Use POST to create new dish selection
-            (format!("{}/clientDiets/dish", API_BASE), reqwest::Method::POST)
+            (
+                format!("{}/clientDiets/dish", API_BASE),
+                reqwest::Method::POST,
+            )
         }
     };
 
-    let body = serde_json::to_string(update)
-        .wrap_err("Failed to serialize dish update request")?;
+    let body = serde_json::to_string(update).wrap_err("Failed to serialize dish update request")?;
 
-    let _response = send_request_with_retry(&url, token, method, Some(body)).await
+    let _response = send_request_with_retry(&url, token, method, Some(body))
+        .await
         .wrap_err("Failed to update dish selection")?;
 
     Ok(())
@@ -157,13 +175,17 @@ pub async fn update_dish_selection(
 /// Fetch delivery configuration
 pub async fn fetch_delivery_config(token: &str, brand_id: i32) -> eyre::Result<DeliveryConfig> {
     let url = format!("{}/diets/delivery?brand_id={}", API_BASE, brand_id);
-    let response = send_request_with_retry(&url, token, reqwest::Method::GET, None).await
+    let response = send_request_with_retry(&url, token, reqwest::Method::GET, None)
+        .await
         .wrap_err("Failed to fetch delivery configuration")?;
 
     match serde_json::from_str::<DeliveryConfig>(&response) {
         Ok(config) => Ok(config),
         Err(e) => {
-            eprintln!("DEBUG: Failed to parse delivery config. Raw response: {}", response);
+            eprintln!(
+                "DEBUG: Failed to parse delivery config. Raw response: {}",
+                response
+            );
             Err(e).wrap_err("Failed to parse delivery configuration response")
         }
     }
@@ -185,8 +207,14 @@ async fn send_request_with_retry(
             Result::Err(ApiError::ServerError(status, body)) if retries < max_retries => {
                 // Exponential backoff: 2^retries seconds
                 let delay = 2_u64.pow(retries);
-                tracing::warn!("Server error {}: {}, retry {} of {}, waiting {} seconds",
-                             status, body, retries + 1, max_retries, delay);
+                tracing::warn!(
+                    "Server error {}: {}, retry {} of {}, waiting {} seconds",
+                    status,
+                    body,
+                    retries + 1,
+                    max_retries,
+                    delay
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
                 retries += 1;
             }
@@ -240,18 +268,25 @@ async fn send_request(
 
         // Handle server errors (5xx) - return error for retry logic
         if status.is_server_error() {
-            let body = response.text().await.unwrap_or_else(|_| "Unable to read response body".to_string());
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read response body".to_string());
             return Result::Err(ApiError::ServerError(status, body));
         }
 
         // Handle client errors (4xx) - do not retry
         if status.is_client_error() {
-            let body = response.text().await.unwrap_or_else(|_| "Unable to read response body".to_string());
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unable to read response body".to_string());
             return Result::Err(ApiError::ClientError(status, body));
         }
 
         // Success - return response body
-        let data = response.text()
+        let data = response
+            .text()
             .await
             .map_err(|e| ApiError::Other(e.into()))?;
         return Result::Ok(data);
@@ -261,8 +296,8 @@ async fn send_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
+    use serde_json::json;
 
     // Helper to create token from JSON payload
     fn create_token(payload: serde_json::Value) -> String {
@@ -396,23 +431,33 @@ mod tests {
 
             match (result, test_case.expected) {
                 (Ok(actual), Ok(expected)) => {
-                    assert_eq!(actual, expected,
+                    assert_eq!(
+                        actual, expected,
                         "Test '{}' failed: expected {}, got {}",
-                        test_case.name, expected, actual);
+                        test_case.name, expected, actual
+                    );
                 }
                 (Err(actual_err), Err(expected_msg)) => {
                     let actual_msg = actual_err.to_string();
-                    assert!(actual_msg.contains(expected_msg),
+                    assert!(
+                        actual_msg.contains(expected_msg),
                         "Test '{}' failed: expected error containing '{}', got '{}'",
-                        test_case.name, expected_msg, actual_msg);
+                        test_case.name,
+                        expected_msg,
+                        actual_msg
+                    );
                 }
                 (Ok(actual), Err(expected_msg)) => {
-                    panic!("Test '{}' failed: expected error '{}', got success with value {}",
-                        test_case.name, expected_msg, actual);
+                    panic!(
+                        "Test '{}' failed: expected error '{}', got success with value {}",
+                        test_case.name, expected_msg, actual
+                    );
                 }
                 (Err(actual_err), Ok(expected)) => {
-                    panic!("Test '{}' failed: expected success with value {}, got error: {}",
-                        test_case.name, expected, actual_err);
+                    panic!(
+                        "Test '{}' failed: expected success with value {}, got error: {}",
+                        test_case.name, expected, actual_err
+                    );
                 }
             }
         }

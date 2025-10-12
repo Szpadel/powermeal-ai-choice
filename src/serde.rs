@@ -46,8 +46,9 @@ where
         where
             E: de::Error,
         {
-            value.parse::<i32>()
-                .map_err(|e| de::Error::custom(format!("Failed to parse '{}' as i32: {}", value, e)))
+            value.parse::<i32>().map_err(|e| {
+                de::Error::custom(format!("Failed to parse '{}' as i32: {}", value, e))
+            })
         }
 
         fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
@@ -77,19 +78,19 @@ pub struct ClientDietsData {
 /// Individual client diet information
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ClientDiet {
-    pub id: i64,                        // client_diet_id
+    pub id: i64, // client_diet_id
     pub client_id: i64,
     pub client_address_id: i64,
-    pub diet_id: i64,                   // diet type ID
+    pub diet_id: i64, // diet type ID
     pub date_from: String,
     pub date_to: String,
     pub created_at: String,
     pub updated_at: String,
-    pub var_cal_id: i64,                // calorie variant ID
+    pub var_cal_id: i64, // calorie variant ID
     pub is_active: i32,
     pub diet_name: String,
     pub var_cal_name: String,
-    pub var_id: i64,                    // variant ID
+    pub var_id: i64, // variant ID
     pub variant_name: Option<String>,
     pub street: Option<String>,
     pub building: Option<String>,
@@ -127,8 +128,8 @@ pub struct DietDetailsData {
 /// Individual day item in a diet
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ClientDietItem {
-    pub id: i64,                        // client_diet_item_id (day identifier)
-    pub date_dlv: String,                // delivery date
+    pub id: i64,          // client_diet_item_id (day identifier)
+    pub date_dlv: String, // delivery date
     pub diet_id: i64,
     pub var_id: i64,
     pub var_cal_id: i64,
@@ -139,13 +140,13 @@ pub struct ClientDietItem {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ExistingDish {
     #[serde(deserialize_with = "deserialize_string_or_int")]
-    pub id: i32,                        // client_diet_dishes ID (used for PATCH)
+    pub id: i32, // client_diet_dishes ID (used for PATCH)
     #[serde(deserialize_with = "deserialize_string_or_int")]
-    pub dish_id: i32,                   // The dish ID
+    pub dish_id: i32, // The dish ID
     #[serde(deserialize_with = "deserialize_string_or_int")]
-    pub var_cal_meal_id: i32,           // Meal variant ID (unique per meal slot)
+    pub var_cal_meal_id: i32, // Meal variant ID (unique per meal slot)
     #[serde(deserialize_with = "deserialize_string_or_int")]
-    pub meal_id: i32,                   // Meal ID
+    pub meal_id: i32, // Meal ID
 }
 
 /// Response from GET /diets/menu endpoint
@@ -158,13 +159,15 @@ pub struct MenuResponse {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct MenuDish {
     // Critical fields for core functionality
-    pub dish_id: i64,                   // Primary identifier
-    pub dish_name: String,              // Display name
-    pub meal_name: String,              // Meal type name
-    pub meal_seq: i32,                  // Meal ordering (1=breakfast, etc.)
+    pub dish_id: i64,      // Primary identifier
+    pub dish_name: String, // Display name
+    pub meal_name: String, // Meal type name
+    #[serde(deserialize_with = "deserialize_string_or_int")]
+    pub meal_id: i32, // Unique meal slot identifier
+    pub meal_seq: i32,     // Meal ordering (1=breakfast, etc.)
 
     // Critical for API updates (only present in type=all responses)
-    pub var_cal_meal_id: Option<i64>,   // Required for dish updates
+    pub var_cal_meal_id: Option<i64>, // Required for dish updates
 
     // Important for AI context
     pub dish_ing_names: Option<String>, // Ingredients for AI analysis
@@ -181,7 +184,6 @@ pub struct DishUpdateRequest {
     pub var_cal_meal_id: i64,
 }
 
-
 /// Response from GET /diets/delivery endpoint
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DeliveryConfig {
@@ -197,8 +199,8 @@ pub struct DeliveryData {
 /// Individual delivery rule with cutoff times
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DeliveryRule {
-    pub day_id: i32,                    // cutoff day (1=Sunday...7=Saturday)
-    pub delv_day_id: i32,               // delivery day
-    pub delv_type_id: i32,              // 5 = menu selection
-    pub delv_time: Option<String>,      // cutoff time (can be null for some types)
+    pub day_id: i32,               // cutoff day (1=Sunday...7=Saturday)
+    pub delv_day_id: i32,          // delivery day
+    pub delv_type_id: i32,         // 5 = menu selection
+    pub delv_time: Option<String>, // cutoff time (can be null for some types)
 }
